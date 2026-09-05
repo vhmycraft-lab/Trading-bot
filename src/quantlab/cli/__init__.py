@@ -34,6 +34,7 @@ from quantlab.adapters.store.sqlite import (
 from quantlab.cli import backtest as backtest_module
 from quantlab.cli import data as data_module
 from quantlab.cli import doctor as doctor_module
+from quantlab.cli import optimize as optimize_module
 from quantlab.cli import report as report_module
 from quantlab.container import PROFILES, Container, Profile, build_container
 from quantlab.core.config import AppConfig, load_config
@@ -121,6 +122,7 @@ app.add_typer(db_app, name="db")
 app.add_typer(data_module.app, name="data")
 app.add_typer(backtest_module.app, name="backtest")
 app.add_typer(report_module.app, name="report")
+app.add_typer(optimize_module.app, name="optimize")
 
 
 def _version_callback(value: bool) -> None:

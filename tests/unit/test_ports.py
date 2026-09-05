@@ -196,6 +196,9 @@ class StubExperimentStore:
     def add_mutations(self, candidate_id: str, mutations: Any) -> None:
         return None
 
+    def record_optuna_study(self, **_fields: Any) -> Any:
+        return None
+
     def record_promotion(self, **_fields: Any) -> Any:
         return None
 

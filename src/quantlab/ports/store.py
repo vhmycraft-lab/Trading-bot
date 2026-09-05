@@ -380,6 +380,24 @@ class ExperimentStore(Protocol):
         """Record the edits that produced a child. Append-only; never updated (INV-10)."""
         ...
 
+    def record_optuna_study(
+        self,
+        *,
+        study_id: str,
+        experiment_id: str,
+        strategy_id: str,
+        segment: str,
+        sampler: str,
+        seed: int,
+        n_trials: int,
+        objective: str,
+        best_trial_json: str,
+        plateau_json: str,
+        storage_path: str,
+    ) -> Any:
+        """Record a completed parameter study and the trials it contributed to ``M``."""
+        ...
+
     def record_promotion(
         self,
         *,
