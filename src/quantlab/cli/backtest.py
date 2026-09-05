@@ -13,6 +13,7 @@ that nothing reaches the strategy that the profile forbids it to see (INV-5).
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -22,9 +23,9 @@ from rich.table import Table
 
 from quantlab.adapters.engine.simple_bar import SimpleBarEngine
 from quantlab.adapters.store.artifacts import FileArtifactStore, FileSourceStore
-from quantlab.adapters.store.sqlite import SqliteExperimentStore
+from quantlab.adapters.store.sqlite import SqliteExperimentStore, missing_tables
 from quantlab.core.errors import ConfigError
-from quantlab.core.types import BacktestConfig, format_ts
+from quantlab.core.types import BacktestConfig, SlippageConfig, format_ts
 from quantlab.experiments.env import git_state
 from quantlab.experiments.runner import ExperimentRunner, RunOutcome
 from quantlab.sandbox.runner import SandboxLimits, SandboxRunner
@@ -45,12 +46,30 @@ SegmentOption = Annotated[
 ]
 
 
+def _require_migrated(container: Any) -> None:
+    """Refuse to run against a database that is not at a known revision.
+
+    Section 6 gives Alembic sole ownership of the schema, so a research command
+    must not create tables on the way past. Without this the first write fails
+    somewhere inside SQLAlchemy with a missing-table error that says nothing about
+    what to do next.
+    """
+    missing = missing_tables(container.db_engine)
+    if missing:
+        raise ConfigError(
+            "the experiment database is not migrated; run `quantlab db upgrade`",
+            missing_tables=list(missing),
+        )
+
+
 def _services(
     ctx: typer.Context,
 ) -> tuple[SqliteExperimentStore, FileArtifactStore, StrategyLoader]:
     """Build the store, artifact tree and loader from the container's config."""
-    container = ctx.obj
-    config = container.config
+    state = ctx.obj
+    container = state.container
+    config = state.config
+    _require_migrated(container)
     store = SqliteExperimentStore(container.session_factory)
     artifacts = FileArtifactStore(config.project.artifacts_dir)
     limits = SandboxLimits(
@@ -68,6 +87,42 @@ def _services(
         engine_class=ENGINE_CLASS,
     )
     return store, artifacts, loader
+
+
+def _register_dataset(
+    store: SqliteExperimentStore, container: Any, exchange: str, policy: Any
+) -> Any:
+    """Record the dataset the run's bars came from.
+
+    The *dataset*, not the segment: `dataset_id` is a hash of the whole manifest
+    (section 7.2), so registering a segment's extent under it would describe the
+    same id differently for every segment — which the store correctly refuses as a
+    conflict. The extent comes from the source's ``available_range``, which is
+    what the id was computed over.
+
+    ``available_range`` reaches past the guard's boundary by design: it reports
+    what is *stored*, never bars, so no partition is read (INV-5).
+    """
+    source = container.market_data
+    extent = source.available_range(policy.symbol, policy.timeframe)
+    if extent is None:
+        raise ConfigError(
+            "no bars are stored for this market; run `quantlab data pull` first",
+            symbol=policy.symbol,
+            timeframe=policy.timeframe,
+        )
+    first, last = extent
+    bar_ms = policy.bar_ms
+    return store.get_or_create_dataset(
+        dataset_id=source.dataset_id(policy.symbol, policy.timeframe),
+        exchange=exchange,
+        symbol=policy.symbol,
+        timeframe=policy.timeframe,
+        start_ts=int(first),
+        end_ts=int(last),
+        n_bars=int((last - first) // bar_ms) + 1,
+        manifest_json="{}",
+    )
 
 
 def _resolve_segment(container: Any, segment: str) -> tuple[Any, Any]:
@@ -111,27 +166,25 @@ def run(
     ] = False,
 ) -> None:
     """Load a strategy, evaluate it on one segment, and record the run."""
-    container = ctx.obj
+    state = ctx.obj
+    container = state.container
     store, artifacts, loader = _services(ctx)
     policy, bars = _resolve_segment(container, segment)
 
     loaded = loader.load_path(strategy, family=family or strategy.stem)
+    backtest_config = state.config.backtest
     settings = BacktestConfig(
-        fee_bps=container.config.costs.fee_bps,
-        slippage=container.config.costs.slippage,
-        seed=container.config.run.seed,
+        initial_equity=backtest_config.initial_equity,
+        fee_bps=backtest_config.fee_bps,
+        slippage=SlippageConfig.model_validate(backtest_config.slippage.model_dump()),
+        allow_short=backtest_config.allow_short,
+        short_borrow_bps_per_bar=backtest_config.short_borrow_bps_per_bar,
+        max_position_fraction=backtest_config.max_position_fraction,
+        fill_rule=backtest_config.fill_rule,
+        seed=state.config.evolution.seed,
     )
-    dataset = store.get_or_create_dataset(
-        dataset_id=bars.dataset_id or policy.dataset_id,
-        exchange=container.config.market.exchange,
-        symbol=bars.symbol,
-        timeframe=bars.timeframe,
-        start_ts=int(bars.start_ts or 0),
-        end_ts=int(bars.end_ts or 0),
-        n_bars=bars.n_bars,
-        manifest_json="{}",
-    )
-    stored_policy = store.get_or_create_split(policy)
+    dataset = _register_dataset(store, container, state.config.market.exchange, policy)
+    stored_policy = store.get_or_create_split(replace(policy, dataset_id=dataset.dataset_id))
     commit, _dirty = git_state()
     experiment = store.create_experiment(
         campaign=campaign,

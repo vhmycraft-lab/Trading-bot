@@ -22,8 +22,8 @@ from rich.console import Console
 from rich.table import Table
 
 from quantlab.adapters.store.artifacts import FileArtifactStore, FileSourceStore
-from quantlab.adapters.store.sqlite import SqliteExperimentStore
-from quantlab.core.errors import StoreError
+from quantlab.adapters.store.sqlite import SqliteExperimentStore, missing_tables
+from quantlab.core.errors import ConfigError, StoreError
 from quantlab.core.metrics import compute_metrics
 from quantlab.core.types import BacktestConfig
 from quantlab.reporting.markdown import RunReport, render_run_report
@@ -72,10 +72,16 @@ def compare_metrics(
 
 
 def _services(ctx: typer.Context) -> tuple[SqliteExperimentStore, FileArtifactStore]:
-    container = ctx.obj
+    state = ctx.obj
+    missing = missing_tables(state.container.db_engine)
+    if missing:
+        raise ConfigError(
+            "the experiment database is not migrated; run `quantlab db upgrade`",
+            missing_tables=list(missing),
+        )
     return (
-        SqliteExperimentStore(container.session_factory),
-        FileArtifactStore(container.config.project.artifacts_dir),
+        SqliteExperimentStore(state.container.session_factory),
+        FileArtifactStore(state.config.project.artifacts_dir),
     )
 
 
@@ -146,7 +152,7 @@ def reproduce(
     Exits non-zero on any disagreement, and prints the trades that differ so the
     divergence can be located rather than merely reported.
     """
-    container = ctx.obj
+    container = ctx.obj.container
     store, artifacts = _services(ctx)
     row = _require_run(store, run_id)
     if row.status != "ok":
