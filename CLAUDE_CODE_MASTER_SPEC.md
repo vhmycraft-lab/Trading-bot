@@ -1,13 +1,15 @@
 # CLAUDE_CODE_MASTER_SPEC.md
 
 **Project:** QuantLab — AI-assisted quantitative trading *research and paper-trading* platform
-**Spec version:** 1.1.1 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
+**Spec version:** 1.1.3 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
 
 **Change log**
 
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.1.3 | Addition found while implementing the engine: new §8.7 **Ruin**. Equity reaching zero now liquidates the account and stops trading, instead of continuing to trade a negative balance. |
+| 1.1.2 | Correction found while implementing the engine: `G_SANITY` (§14.3) compared the *realised* `position_frac` against `max_position_fraction + 1e-9`, which no correct run can satisfy — a position sized at the deciding bar's close is marked one bar later, after the market has moved. The gate now allows a documented drift allowance, and the exact no-drift invariant moved to where it holds. |
 | 1.1.1 | Corrections to 1.1, found while implementing the config schema: `mutation.structural` now carries one weight per operator in the §13.4 table (`replace_indicator` and `change_tree_mode` were missing); `diversity.max_immigrants` default lowered 6 → 4 and constrained to `n_offspring + n_immigrants`, since an immigrant boost displaces offspring and never a survivor. |
 | 1.1 | §13 replaced: the sequential *propose → backtest → modify* research loop is superseded by an **evolutionary optimiser** over a population of strategy candidates. Adds the strategy **genome** and first-class risk controls (§8.4, §9), multi-objective **fitness** (§13.3), **mutation** operators (§13.4), **diversity** management (§13.5), **lineage** persistence (§6), the **trade-removal** robustness test (§14.4), and invariants INV-9…INV-11. The LLM's role changes from sequential author to genome proposer (§12). See ADR `docs/DECISIONS/0003`. |
 **Audience:** Claude Code. Every instruction below is addressed to you, the implementing agent.
@@ -971,6 +973,28 @@ of intrabar assumptions:
 Changing any rule here is an `engine_version` bump and fails the golden tests,
 which is intended.
 
+### 8.7 Ruin
+
+An account whose marked equity reaches zero is gone. The engine closes any open
+position at that bar's close with full costs, sets `BacktestResult.ruined`, and
+takes no further position for the rest of the run.
+
+Without this rule the engine keeps trading a negative balance, and a search
+process will eventually discover that negative-equity arithmetic can be made to
+look profitable — a strategy that "recovers" from -5 000 to -1 000 shows a large
+positive return over that stretch.
+
+Liquidation happens at the **close**, never intrabar: identifying the moment
+equity crossed zero inside a bar would need the intrabar path that §8.6 refuses
+to assume. A bar that gaps far enough can therefore leave equity **below** zero,
+which is realistic — a short squeeze can leave a real account owing money — and
+is reported rather than hidden. `max_drawdown` is still a fraction in `[0, 1]`
+(§10): a total loss is 100 %, and the debt is visible in the equity series and in
+`ruined`.
+
+Any validation gate MUST treat `ruined = True` as a rejection regardless of the
+other metrics.
+
 ## 9. Strategy API
 
 ### 9.1 Contract (`core/strategy.py`)
@@ -1667,7 +1691,7 @@ Fixtures in `tests/fixtures/strategies/leaky/` MUST include: `close.shift(-1)` u
 |---|---|
 | `G_LEAK` | probe passed |
 | `G_MIN_TRADES` | `n_trades_val ≥ min_trades_val` and `n_trades_train ≥ min_trades_train` |
-| `G_SANITY` | no trade with `abs(pnl_pct) > max_single_trade_pct`; `max(abs(position_frac)) ≤ max_position_fraction + 1e-9` |
+| `G_SANITY` | no trade with `abs(pnl_pct) > max_single_trade_pct`; `max(abs(position_frac)) ≤ max_position_fraction · (1 + sanity_drift_allowance)`, default allowance `0.5`. The cap bounds the *target* fraction at decision time; the realised fraction then drifts with the market between rebalances, so a `1e-9` tolerance would fail on correctly-behaved strategies. The exact invariant — committed capital at a fill never exceeds `max_position_fraction × equity` at the deciding bar — is checked by the engine's property tests. |
 | `G_COST` | `net_return_val@(cost_survival_multiplier×) > 0` |
 | `G_PERM` | market-permutation p-value ≤ `permutation.alpha` (§14.4-3) |
 | `G_DEGRADE` | `sharpe_val > 0` and `sharpe_val ≥ degradation_min_ratio · sharpe_train` |
@@ -1853,6 +1877,8 @@ QuantLabError
 | `tests/unit/test_strategy_api.py` | ParamSpec validation; `BarWindow` raises `LookaheadError` beyond `i`; immutability |
 | `tests/unit/test_indicators.py` | equality with pandas reference for each indicator |
 | `tests/unit/test_engine.py` | next-open fill; slippage direction; fee math; min-notional drop; gap-bar deferral; reversal = two fills; end-of-data close; shorts disabled by default |
+| `tests/unit/test_engine_edge_cases.py` | ruin (§8.7); degenerate frames; lot step larger than the position; extreme equities and prices; a 100 % fee; log bound |
+| `tests/unit/test_engine_lookahead.py` | INV-3 for the engine: window width, truncation probe, reversed tail, costs and sizing reading only past bars |
 | `tests/unit/test_ast_check.py` | 20 malicious/invalid snippets rejected with correct violation codes; 5 valid pass |
 | `tests/unit/test_sandbox.py` | timeout; memory limit; forbidden import at runtime; socket blocked; result round-trip; child never imports `quantlab.adapters` |
 | `tests/unit/test_loader.py` | code hash; immutable copy; lineage; tamper detection |
@@ -1944,15 +1970,15 @@ authoritative map; the phase sections that follow carry the detail.
 | T02 | unchanged | — |
 | T03 | AMENDED | `test_architecture.py` also enforces INV-9/10/11 boundaries once phase F′ lands |
 | T04 | AMENDED — **done** | `configs/default.yaml` + `core/config.py` carry the `evolution:` section, `optimize.engine`, `walkforward.evolution_generations` and the reshaped `research:` section. Weights sum to 1; `n_survivors + n_offspring + n_immigrants == population_size`; `diversity.max_immigrants <= n_offspring + n_immigrants`. Schema only — no optimiser behaviour. |
-| T05 | AMENDED | `core/types.py` gains `RiskSpec`, `SizingSpec`; `Fill` records which risk control fired |
+| T05 | AMENDED — **done** | `core/types.py` carries `RiskSpec`, `SizingSpec`, `SlippageConfig`, `BacktestConfig`, `BacktestResult`; the control that fired is recorded in the engine log |
 | T06–T09 | unchanged | — |
-| T10 | unchanged | — |
-| T11 | AMENDED | `MetricSet` gains `consistency`, `retention_1/3/5`; `docs/METRICS.md` documents them |
-| T12 | AMENDED | `Strategy` protocol gains `risk` and `sizing`; AST checker forbids hand-rolled stops |
-| T13 | unchanged | — |
-| T14 | AMENDED | engine implements §8.6 risk exits; `engine_version` bumps; goldens regenerate |
-| T15 | AMENDED | baselines declare an explicit `RiskSpec()`; goldens cover a stop-loss case |
-| T16 | unchanged | — |
+| T10 | **done** | `core/costs.py` |
+| T11 | AMENDED — **done** | `MetricSet` carries `consistency` and `retention_1/3/5`; `docs/METRICS.md` written |
+| T12 | AMENDED — **done** (AST part is T17) | `Strategy` carries `risk` and `sizing`; `ParamSpec`, `Context`, `IndicatorCache` implemented |
+| T13 | **done** | `core/indicators.py`, all 14 indicators, causality proved per bar |
+| T14 | AMENDED — **done** (goldens are T15) | `adapters/engine/simple_bar.py` at `engine_version = "1"`, including §8.6 risk exits and §8.7 ruin |
+| T15 | AMENDED — **partly done** | `strategies/TEMPLATE.py` and the four baselines exist and declare an explicit `RiskSpec()`; the committed golden fixtures still need the real 2-month Parquet file |
+| T16 | **done** | `tests/synthetic/` — no edge in noise, trend and reversion behave as expected |
 | T17 | AMENDED | AST checker also accepts compiler output and rejects hand-rolled stops |
 | T18–T19 | unchanged | — |
 | T20 | AMENDED | loader handles `kind='genome'`, storing `genome_json` alongside the compiled source |
@@ -1973,7 +1999,8 @@ authoritative map; the phase sections that follow carry the detail.
 | T42 | AMENDED | dashboard gains the lineage tree and per-generation fitness view |
 | T43 | AMENDED | docs include `docs/EVOLUTION.md` |
 | T44 | unchanged | — |
-| T45–T56 | NEW | phase F′, below |
+| T45 | NEW — **done early** | risk controls landed with the engine rather than after it: §8.6 has no meaning without §8.4, and splitting them would have shipped an engine whose `Trade.exit_reason` could never be `"stop"` |
+| T46–T56 | NEW | phase F′, below |
 
 ### Phase A — Skeleton
 

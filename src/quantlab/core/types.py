@@ -23,6 +23,7 @@ from typing import Any, Final, Literal, Self
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quantlab.core.errors import DataValidationError, LookaheadError
 
@@ -38,9 +39,12 @@ __all__ = [
     "Fill",
     "Order",
     "Position",
+    "RiskSpec",
     "Side",
     "Signal",
     "SignalKind",
+    "SizingSpec",
+    "SlippageConfig",
     "Trade",
     "bars_per_year",
     "empty_bar_frame_df",
@@ -239,6 +243,9 @@ _PRICE_COLUMNS: Final[tuple[str, ...]] = ("open", "high", "low", "close")
 
 #: Upper bound on the rows a strategy may materialise as a DataFrame at once.
 MAX_WINDOW_DF_ROWS: Final[int] = 5_000
+
+#: Upper bound on engine log lines kept in a result (spec section 8.2).
+MAX_ENGINE_LOG_LINES: Final[int] = 10_000
 
 
 def empty_bar_frame_df() -> pd.DataFrame:
@@ -751,6 +758,154 @@ class Trade:
     pnl_pct: float
     bars_held: int
     exit_reason: Literal["signal", "end_of_data", "stop"]
+
+
+# ---------------------------------------------------------------------------
+# risk, sizing and backtest configuration (spec sections 8.2, 8.6, 9.1)
+# ---------------------------------------------------------------------------
+class SlippageConfig(BaseModel):
+    """Which slippage model the engine uses, and its parameters (spec section 8.5)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    model: Literal["fixed_bps", "volatility_scaled", "volume_impact"] = "fixed_bps"
+    fixed_bps: float = Field(default=5.0, ge=0)
+    vol_k: float = Field(default=0.10, ge=0)
+    impact_a_bps: float = Field(default=2.0, ge=0)
+    impact_b: float = Field(default=50.0, ge=0)
+
+
+class RiskSpec(BaseModel):
+    """Engine-applied exits (spec section 8.6).
+
+    Declared per candidate and applied by the engine, never by the strategy: a
+    stop is an *intrabar* event, and :class:`BarWindow` refuses intrabar
+    information (INV-3), so a strategy implementing its own stop would have to
+    either look ahead or approximate.
+
+    Every percentage is a positive fraction of the entry price, e.g. ``0.02``
+    for 2 %.  ``None`` disables the control.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stop_loss_pct: float | None = Field(default=None, gt=0, lt=1)
+    take_profit_pct: float | None = Field(default=None, gt=0)
+    trailing_stop_pct: float | None = Field(default=None, gt=0, lt=1)
+    time_stop_bars: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _target_must_beat_the_stop(self) -> RiskSpec:
+        if (
+            self.take_profit_pct is not None
+            and self.stop_loss_pct is not None
+            and self.take_profit_pct <= self.stop_loss_pct
+        ):
+            raise ValueError(
+                "take_profit_pct must exceed stop_loss_pct; otherwise the target sits "
+                "inside the stop and the position can never reach it"
+            )
+        return self
+
+    @property
+    def is_active(self) -> bool:
+        """True if any control is enabled."""
+        return any(
+            value is not None
+            for value in (
+                self.stop_loss_pct,
+                self.take_profit_pct,
+                self.trailing_stop_pct,
+                self.time_stop_bars,
+            )
+        )
+
+
+class SizingSpec(BaseModel):
+    """How a target fraction of equity becomes a position size (spec section 9.1)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["fixed_fraction", "volatility_target", "atr_risk"] = "fixed_fraction"
+    fraction: float = Field(default=1.0, gt=0)
+    target_vol_annual: float | None = Field(default=None, gt=0)
+    atr_period: int = Field(default=14, ge=1)
+    atr_risk_pct: float | None = Field(default=None, gt=0, lt=1)
+    #: Lookback for the realised volatility estimate in ``volatility_target`` mode.
+    vol_lookback: int = Field(default=20, ge=2)
+
+    @model_validator(mode="after")
+    def _mode_has_its_parameter(self) -> SizingSpec:
+        if self.mode == "volatility_target" and self.target_vol_annual is None:
+            raise ValueError("volatility_target sizing requires target_vol_annual")
+        if self.mode == "atr_risk" and self.atr_risk_pct is None:
+            raise ValueError("atr_risk sizing requires atr_risk_pct")
+        return self
+
+
+class BacktestConfig(BaseModel):
+    """Everything the engine needs that is not the strategy or the bars (spec section 8.2)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    initial_equity: float = Field(default=10_000.0, gt=0)
+    fee_bps: float = Field(default=10.0, ge=0)
+    slippage: SlippageConfig = SlippageConfig()
+    cost_multiplier: float = Field(default=1.0, gt=0)
+    fill_rule: Literal["next_open"] = "next_open"
+    allow_short: bool = False
+    short_borrow_bps_per_bar: float = Field(default=0.0, ge=0)
+    lot_step: float = Field(default=0.00001, gt=0)
+    min_notional: float = Field(default=5.0, ge=0)
+    max_position_fraction: float = Field(default=1.0, gt=0)
+    bars_per_year: int = Field(default=8_760, ge=1)
+    seed: int = 0
+    risk: RiskSpec = RiskSpec()
+    sizing: SizingSpec = SizingSpec()
+
+    def config_hash(self) -> str:
+        """Stable hash of the configuration, for the run identity of spec section 11.2."""
+        from quantlab.core.hashing import canonical_json, sha256_hex
+
+        return sha256_hex(canonical_json(self.model_dump(mode="json")))
+
+
+class BacktestResult(BaseModel):
+    """Everything one backtest produced (spec section 8.2).
+
+    Metrics are computed from :attr:`equity` and :attr:`trades` alone (spec
+    section 10), so every engine adapter yields identical metric semantics.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    #: Equity after costs, one point per bar including warm-up, indexed by ``ts_open``.
+    equity: pd.Series
+    #: Signed fraction of equity in the market, per bar.
+    position_frac: pd.Series
+    #: Raw signal per bar as emitted, kept for leakage audits.
+    signals: pd.Series
+    fills: tuple[Fill, ...] = ()
+    trades: tuple[Trade, ...] = ()
+    warmup_bars: int = 0
+    n_bars: int = 0
+    bars_per_year: int = 8_760
+    engine_name: str = ""
+    engine_version: str = ""
+    #: ``total_fees``, ``total_slippage``, ``turnover``, ``total_borrow``.
+    cost_summary: dict[str, float] = Field(default_factory=dict)
+    #: Human-readable engine events, bounded to :data:`MAX_ENGINE_LOG_LINES`.
+    log: tuple[str, ...] = ()
+    #: True if equity reached zero and the account was liquidated (spec section 8.7).
+    ruined: bool = False
+
+    @property
+    def initial_equity(self) -> float:
+        return float(self.equity.iloc[0]) if len(self.equity) else 0.0
+
+    @property
+    def final_equity(self) -> float:
+        return float(self.equity.iloc[-1]) if len(self.equity) else 0.0
 
 
 @dataclass(frozen=True, slots=True)

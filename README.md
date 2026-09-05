@@ -31,11 +31,28 @@ Phases 1 (foundation) and 2 (historical market data) are complete.
 | Archive ingestion + Parquet store | `quantlab.adapters.data.binance_archive` | complete (spec §7.1, §7.2) |
 | REST tail updates | `quantlab.adapters.data.ccxt_rest` | complete (spec §7.1) |
 | Partition guard (INV-5) | `quantlab.adapters.data.guard` | complete (spec §7.4) |
+| Indicators | `quantlab.core.indicators` | complete (spec §9.3, 14 indicators, all causal) |
+| Strategy contract | `quantlab.core.strategy` | complete (spec §9.1) |
+| Cost models | `quantlab.core.costs` | complete (spec §8.5) |
+| Backtest engine | `quantlab.adapters.engine.simple_bar` | complete (spec §8.4, §8.6, §8.7) |
+| Metrics | `quantlab.core.metrics` | complete (spec §10) |
+| Baseline strategies | `strategies/` | complete (spec §9.4, §9.5) |
 | CLI | `quantlab.cli` (`version`, `doctor`, `config`, `db`, `data`) | complete |
 
-Not implemented yet, by design: the backtest engine, indicators, metrics,
-sandbox, evolutionary optimiser, validation suite, LLM proposer and
-paper-trading runtime.
+Not implemented yet, by design: the sandbox, the evolutionary optimiser, the
+validation suite, the LLM proposer and the paper-trading runtime.
+
+### The backtester
+
+Deterministic, and independent of everything above it — it takes a strategy and
+some bars and reports what would have happened. It knows nothing about search.
+
+A decision at the close of bar `t` fills at the **open of bar `t+1`**. Risk
+controls (stop-loss, take-profit, trailing and time stops) are applied by the
+engine rather than by the strategy, because a stop is an intrabar event and the
+`BarWindow` refuses intrabar data. Every ambiguity is resolved **against the
+trader**: fills take the worse of trigger price and bar open, a stop-loss beats a
+take-profit on the same bar, and no exit fires on a gap-filled bar.
 
 ### How strategies are searched
 
@@ -279,6 +296,7 @@ Coverage gates (enforced by `scripts/check_coverage.py`): `core/`, `sandbox/`,
 
 * `CLAUDE_CODE_MASTER_SPEC.md` — the normative specification (v1.1)
 * `docs/ARCHITECTURE.md` — layers, ports and the composition root
+* `docs/METRICS.md` — metric definitions, mirroring spec §10
 * `docs/EVOLUTION.md` — evolutionary optimiser design notes (non-normative)
 * `docs/SECURITY.md` — secrets, sandboxing, supply chain, repo hygiene
 * `docs/DECISIONS/` — architecture decision records

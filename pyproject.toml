@@ -71,6 +71,11 @@ ignore = [
 "tests/**" = ["S", "ARG", "PTH"]
 "scripts/**" = ["S", "PTH"]
 "migrations/**" = ["ARG", "PTH", "I"]
+# Strategy modules have the fixed declarative shape of spec section 9.4:
+# a class with class-level `params`, and an `on_bar` that may legitimately
+# ignore its context. Adding ClassVar noise to each would fight the template
+# the specification prescribes, and the AST checker restricts their imports.
+"strategies/**" = ["RUF012", "ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["quantlab"]

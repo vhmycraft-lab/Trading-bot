@@ -9,12 +9,16 @@ from __future__ import annotations
 import io
 import zipfile
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import pandas as pd
 
 from quantlab.adapters.data.binance_archive import kline_columns
 from quantlab.core.types import coerce_bar_frame_df, empty_bar_frame_df, timeframe_ms, to_ms
+
+if TYPE_CHECKING:
+    from quantlab.core.types import BarFrame
 
 #: A stable starting point used by most fixtures: 2023-01-01T00:00:00Z.
 EPOCH_2023 = to_ms("2023-01-01T00:00:00Z")
@@ -138,3 +142,97 @@ def ohlcv_rows(frame: pd.DataFrame) -> list[list[float]]:
         ]
         for row in frame.itertuples(index=False)
     ]
+
+
+# ---------------------------------------------------------------------------
+# deterministic toy bars and strategies for engine tests
+# ---------------------------------------------------------------------------
+def toy_frame(
+    rows: Sequence[Sequence[float]],
+    *,
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    start_ts: int = EPOCH_2023,
+    gap_filled: Sequence[bool] | None = None,
+) -> BarFrame:
+    """Build a :class:`BarFrame` from explicit ``(open, high, low, close)`` rows.
+
+    Volume and trade count are fixed and non-zero so that no cost model divides
+    by zero; timestamps are consecutive bars from ``start_ts``.  Every engine
+    test that asserts an exact number uses this, so the number can be worked out
+    on paper.
+    """
+    from quantlab.core.types import BarFrame, coerce_bar_frame_df, timeframe_ms
+
+    bar_ms = timeframe_ms(timeframe)
+    frame = pd.DataFrame(
+        {
+            "ts_open": [start_ts + i * bar_ms for i in range(len(rows))],
+            "open": [float(r[0]) for r in rows],
+            "high": [float(r[1]) for r in rows],
+            "low": [float(r[2]) for r in rows],
+            "close": [float(r[3]) for r in rows],
+            "volume": [10.0] * len(rows),
+            "quote_volume": [100_000.0] * len(rows),
+            "trades": [10] * len(rows),
+            "is_gap_filled": list(gap_filled) if gap_filled else [False] * len(rows),
+        }
+    )
+    return BarFrame(coerce_bar_frame_df(frame), symbol=symbol, timeframe=timeframe)
+
+
+def flat_frame(prices: Sequence[float], *, spread: float = 1.0, **kwargs) -> BarFrame:
+    """Bars whose open and close are ``price`` and whose range is +/- ``spread``."""
+    return toy_frame(
+        [(p, p + spread, p - spread, p) for p in prices],
+        **kwargs,
+    )
+
+
+def zero_cost_config(**overrides):
+    """A config with no fees and no slippage, for isolating one mechanism at a time."""
+    from quantlab.core.types import BacktestConfig, SlippageConfig
+
+    base = {
+        "initial_equity": 10_000.0,
+        "fee_bps": 0.0,
+        "slippage": SlippageConfig(model="fixed_bps", fixed_bps=0.0),
+        "lot_step": 1e-12,
+        "min_notional": 0.0,
+        "bars_per_year": 8_760,
+    }
+    base.update(overrides)
+    return BacktestConfig(**base)
+
+
+class ScriptedStrategy:
+    """Emits a fixed sequence of signals, one per bar.
+
+    The clearest possible strategy: what it does is written down, so any surprise
+    in a test is a surprise in the engine.
+    """
+
+    name = "scripted"
+    version = "1"
+    style = "bar_loop"
+    params: ClassVar[dict] = {}
+    warmup_bars = 0
+
+    def __init__(self, script: Sequence[str], *, warmup: int = 0) -> None:
+        from quantlab.core.types import RiskSpec, SizingSpec
+
+        self.script = list(script)
+        self.warmup_bars = warmup
+        self.risk = RiskSpec()
+        self.sizing = SizingSpec()
+        self.seen: list[int] = []
+
+    def prepare(self, params) -> None:
+        self.seen = []
+
+    def on_bar(self, ctx):
+        from quantlab.core.types import Signal, SignalKind
+
+        self.seen.append(ctx.i)
+        kind = self.script[ctx.i] if ctx.i < len(self.script) else "flat"
+        return Signal(SignalKind(kind))
