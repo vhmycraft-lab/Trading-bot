@@ -2057,7 +2057,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T20 | AMENDED — **done for source-loaded strategies** | `strategies_io/loader.py`, `strategies_io/probe.py`, `SourceStore` port + `FileSourceStore`, `ExperimentStore.get_strategy_version`. Vectorised strategies are probed at load through the sandbox (§9.1, T19). **Deferred:** `kind='genome'` and `genome_json` (no column before migration `0002`; needs T45/T46) |
 | T21 | AMENDED — **done** | `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001` and `0002`, `ports/store.py` grown to §11.1 including the evolution methods; the five evolution tables, their append-only rules and lineage queries |
 | T22 | AMENDED — **done** | `experiments/{runner,env}.py`, `cli/backtest.py`, `strategies_io/evaluators.py`, `ports/engine.StrategyEvaluator`; `force` verifies rather than overwrites (1.1.9) |
-| T23 | unchanged | — |
+| T23 | AMENDED — **partial** | `reporting/{markdown,tearsheet}.py`, `cli/report.py` (`report show`, `report reproduce`). **Remaining:** `tests/integration/test_reproduce.py` (INV-7 on golden runs) and the CLI integration test |
 | T24 | SUPERSEDED by T47/T51 | Optuna demoted to refinement (§13.8); objectives retained |
 | T25 | AMENDED | plateau selection becomes **mandatory** before validation |
 | T26 | AMENDED | walk-forward re-search uses evolution when `optimize.engine == evolution` |
