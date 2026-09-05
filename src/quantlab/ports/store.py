@@ -397,6 +397,14 @@ class ExperimentStore(Protocol):
         """A run's candidates, deterministically ordered."""
         ...
 
+    def generations_for(self, evolution_id: str) -> Sequence[Any]:
+        """A run's generations, oldest first."""
+        ...
+
+    def mutations_for(self, candidate_id: str) -> Sequence[Any]:
+        """The edits that produced a candidate, in application order (INV-10)."""
+        ...
+
     def ancestry(self, candidate_id: str) -> Sequence[Any]:
         """Every ancestor of a candidate, oldest first, ending with itself."""
         ...

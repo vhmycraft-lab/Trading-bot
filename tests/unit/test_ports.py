@@ -202,6 +202,12 @@ class StubExperimentStore:
     def candidates_for(self, evolution_id: str, gen_index: int | None = None) -> list[Any]:
         return []
 
+    def generations_for(self, evolution_id: str) -> list[Any]:
+        return []
+
+    def mutations_for(self, candidate_id: str) -> list[Any]:
+        return []
+
     def ancestry(self, candidate_id: str) -> list[Any]:
         return []
 
