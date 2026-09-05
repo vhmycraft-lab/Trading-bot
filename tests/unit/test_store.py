@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pandas as pd
 import pytest
@@ -30,14 +30,19 @@ from sqlalchemy.orm import sessionmaker
 
 from quantlab.adapters.store.artifacts import ARTIFACT_PARQUET_KWARGS, FileArtifactStore
 from quantlab.adapters.store.models import (
+    EVOLUTION_TABLES,
     MUTABLE_COLUMNS,
     TABLE_NAMES,
     Base,
+    Candidate,
+    CandidatePromotion,
     Dataset,
     Experiment,
+    Generation,
     LlmInteraction,
     LockboxAccess,
     Metric,
+    Mutation,
     OptunaStudy,
     PaperSession,
     Run,
@@ -66,6 +71,17 @@ from quantlab.core.types import Trade as TradeRecord
 from quantlab.ports.store import ArtifactStore, ExperimentStore
 
 HOUR_MS: Final[int] = 3_600_000
+
+
+def _head_revision() -> str:
+    """The newest migration on disk.
+
+    Asserted against rather than a literal, so adding a migration updates the
+    expectation by existing rather than by someone remembering to edit a string.
+    """
+    versions = sorted((migrations_dir() / "versions").glob("[0-9]*.py"))
+    assert versions, "no migrations found"
+    return versions[-1].name.split("_", 1)[0]
 
 
 def _now() -> int:
@@ -115,14 +131,14 @@ def test_empty_database_has_no_revision(empty_engine: Engine) -> None:
 
 
 def test_upgrade_creates_every_table(db_engine: Engine) -> None:
-    assert current_revision(db_engine) == "0001"
+    assert current_revision(db_engine) == _head_revision()
     assert missing_tables(db_engine) == ()
     present = set(inspect(db_engine).get_table_names())
     assert set(TABLE_NAMES) <= present
 
 
 def test_upgrade_is_idempotent(db_engine: Engine) -> None:
-    assert upgrade_to_head(db_engine) == "0001"
+    assert upgrade_to_head(db_engine) == _head_revision()
     assert missing_tables(db_engine) == ()
 
 
@@ -1281,7 +1297,7 @@ def test_alembic_upgrade_head_succeeds_against_an_empty_database(
 ) -> None:
     assert current_revision(empty_engine) is None
     assert missing_tables(empty_engine) == TABLE_NAMES
-    assert upgrade_to_head(empty_engine) == "0001"
+    assert upgrade_to_head(empty_engine) == _head_revision()
     assert missing_tables(empty_engine) == ()
 
 
@@ -1431,3 +1447,472 @@ def test_inv8_the_store_adapter_does_not_reach_across_the_layer_boundary() -> No
                 assert name.startswith(
                     ("quantlab.core", "quantlab.ports", "quantlab.adapters.store")
                 ), f"{path}: {name}"
+
+
+# ---------------------------------------------------------------------------
+# T21 amendment: the evolution tables (spec section 6, spec 1.1)
+# ---------------------------------------------------------------------------
+def _evolution(store: SqliteExperimentStore) -> tuple[Any, Any]:
+    """An evolution run and its first generation, with all prerequisites."""
+    run, _ = _run(store)
+    evolution = store.create_evolution_run(
+        evolution_id="ev0",
+        experiment_id=run.experiment_id,
+        campaign="c1",
+        dataset_id="d0",
+        split_id=run.split_id,
+        population_size=16,
+        n_survivors=12,
+        n_offspring=3,
+        n_immigrants=1,
+        max_generations=30,
+        seed=42,
+        fitness_config_json='{"weights":{}}',
+        mutation_config_json="{}",
+        diversity_config_json="{}",
+    )
+    generation = store.add_generation(
+        generation_id="g0",
+        evolution_id=evolution.evolution_id,
+        gen_index=0,
+        diversity=0.71,
+        n_evaluated=16,
+        n_cache_hits=0,
+        n_rejected_by_gate=1,
+        n_immigrants_used=1,
+    )
+    return evolution, generation
+
+
+def _candidate(
+    store: SqliteExperimentStore,
+    candidate_id: str,
+    *,
+    origin: str = "seed",
+    parent: str | None = None,
+    gen_index: int = 0,
+) -> Any:
+    return store.add_candidate(
+        candidate_id=candidate_id,
+        evolution_id="ev0",
+        generation_id="g0",
+        gen_index=gen_index,
+        strategy_id="s0",
+        params_json='{"fast":20}',
+        kind="genome",
+        origin=origin,
+        genome_json='{"entry":{}}',
+        parent_candidate_id=parent,
+    )
+
+
+def test_migration_0002_is_the_head_and_adds_the_five_evolution_tables(
+    empty_engine: Engine,
+) -> None:
+    assert upgrade_to_head(empty_engine) == _head_revision() == "0002"
+    present = set(inspect(empty_engine).get_table_names())
+    assert set(EVOLUTION_TABLES) <= present
+    assert EVOLUTION_TABLES == (
+        "evolution_run",
+        "generation",
+        "candidate",
+        "mutation",
+        "candidate_promotion",
+    )
+
+
+def test_migration_0002_follows_0001(db_engine: Engine) -> None:
+    """Ordering, not just presence: the evolution tables reference `experiment`,
+    `dataset`, `split_policy` and `run`, so 0001 has to have run first."""
+    assert missing_tables(db_engine) == ()
+    assert current_revision(db_engine) == "0002"
+
+
+def test_the_evolution_indexes_from_the_spec_exist(db_engine: Engine) -> None:
+    inspector = inspect(db_engine)
+    assert {i["name"] for i in inspector.get_indexes("candidate")} >= {
+        "ix_candidate_evolution",
+        "ix_candidate_parent",
+        "ix_candidate_strategy",
+    }
+    assert {i["name"] for i in inspector.get_indexes("mutation")} >= {"ix_mutation_candidate"}
+    assert {i["name"] for i in inspector.get_indexes("candidate_promotion")} >= {
+        "ix_promotion_candidate"
+    }
+
+
+def test_an_evolution_run_records_the_search_it_performed(
+    store: SqliteExperimentStore,
+) -> None:
+    evolution, _ = _evolution(store)
+    assert evolution.status == "running"
+    assert evolution.n_evaluations == 0
+    assert (evolution.population_size, evolution.n_survivors) == (16, 12)
+    assert evolution.fitness_config_json == '{"weights":{}}'
+    assert evolution.finished_at is None
+
+
+def test_finishing_an_evolution_run_records_why_it_stopped(
+    store: SqliteExperimentStore,
+) -> None:
+    _evolution(store)
+    finished = store.finish_evolution_run("ev0", "stopped", "no improvement in 8 generations")
+    assert finished.status == "stopped"
+    assert finished.stop_reason == "no improvement in 8 generations"
+    assert finished.finished_at is not None
+    with pytest.raises(RunConflict, match="already finished"):
+        store.finish_evolution_run("ev0", "completed")
+
+
+def test_the_evaluation_count_is_kept_because_dsr_needs_it(
+    store: SqliteExperimentStore,
+) -> None:
+    """Section 14.4's ``M``. A cached evaluation is still an evaluation: it was
+    tried, and the multiple-testing correction has to know."""
+    _evolution(store)
+    assert store.count_evaluation("ev0") == 1
+    assert store.count_evaluation("ev0", 15) == 16
+
+
+def test_a_generation_is_append_only(db_engine: Engine, store: SqliteExperimentStore) -> None:
+    _, generation = _evolution(store)
+    assert generation.diversity == 0.71
+    factory = make_session_factory(db_engine)
+    with pytest.raises(ImmutableRowError), session_scope(factory) as session:
+        row = session.get(Generation, "g0")
+        assert row is not None
+        row.diversity = 0.1
+        session.flush()
+
+
+def test_a_generation_index_is_unique_within_a_run(store: SqliteExperimentStore) -> None:
+    _evolution(store)
+    with pytest.raises(IntegrityError):
+        store.add_generation(
+            generation_id="g0-again",
+            evolution_id="ev0",
+            gen_index=0,
+            diversity=0.5,
+            n_evaluated=1,
+            n_cache_hits=0,
+            n_rejected_by_gate=0,
+            n_immigrants_used=0,
+        )
+
+
+def test_a_candidate_enters_the_population_unscored(store: SqliteExperimentStore) -> None:
+    """Section 13.2: a candidate whose run fails is recorded with its error and
+    never silently dropped, so it has to exist before it is evaluated."""
+    _evolution(store)
+    candidate = _candidate(store, "c0")
+    assert candidate.fitness is None
+    assert candidate.run_id is None
+    assert candidate.survived == 0
+    assert candidate.components_json == "{}"
+
+
+def test_scoring_a_candidate_writes_only_the_mutable_columns(
+    store: SqliteExperimentStore,
+) -> None:
+    _run(store, "r1")
+    _evolution(store)
+    _candidate(store, "c0")
+    scored = store.score_candidate(
+        "c0",
+        run_id="r1",
+        fitness=1.25,
+        base_score=1.5,
+        penalty_product=0.83,
+        components_json='{"expectancy":0.4}',
+        penalties_json='{"complexity":0.9}',
+        rank=1,
+        survived=True,
+        behaviour_hash="b" * 16,
+    )
+    assert scored.fitness == 1.25
+    assert scored.survived == 1
+    assert scored.rank == 1
+    assert scored.run_id == "r1"
+
+
+def test_a_rejected_candidate_keeps_its_gate_failure(store: SqliteExperimentStore) -> None:
+    _evolution(store)
+    _candidate(store, "c0")
+    scored = store.score_candidate("c0", gate_failure="G_MIN_TRADES", fitness=-1e9)
+    assert scored.gate_failure == "G_MIN_TRADES"
+    assert store.candidates_for("ev0") == [scored] or scored.candidate_id == "c0"
+
+
+@pytest.mark.parametrize(
+    "column", ["params_json", "kind", "origin", "strategy_id", "gen_index", "signature_json"]
+)
+def test_a_candidates_identity_columns_are_immutable(
+    db_engine: Engine, store: SqliteExperimentStore, column: str
+) -> None:
+    _evolution(store)
+    _candidate(store, "c0")
+    factory = make_session_factory(db_engine)
+    with pytest.raises(ImmutableRowError), session_scope(factory) as session:
+        row = session.get(Candidate, "c0")
+        assert row is not None
+        setattr(row, column, 99 if column == "gen_index" else "changed")
+        session.flush()
+
+
+def test_mutations_are_append_only_and_never_updated(
+    db_engine: Engine, store: SqliteExperimentStore
+) -> None:
+    """INV-10: re-applying these to the parent's genome must reproduce the child
+    byte for byte, which it cannot do if the record can be revised afterwards.
+
+    ``mutation`` is deliberately absent from ``MUTABLE_COLUMNS``: not an
+    oversight, the whole point.
+    """
+    assert "mutation" not in MUTABLE_COLUMNS
+    _evolution(store)
+    _candidate(store, "c0")
+    _candidate(store, "c1", origin="mutant", parent="c0")
+    store.add_mutations(
+        "c1",
+        [
+            {
+                "parent_candidate_id": "c0",
+                "category": "parameter",
+                "operator": "perturb_numeric",
+                "target": "params.fast",
+                "before_json": "20",
+                "after_json": "24",
+                "rng_seed": 11,
+            },
+            {
+                "parent_candidate_id": "c0",
+                "category": "structural",
+                "operator": "add_confirmation",
+                "target": "entry.conditions",
+                "before_json": "[]",
+                "after_json": '[{"op":">"}]',
+                "rng_seed": 12,
+                "suggested_by": "llm",
+            },
+        ],
+    )
+    recorded = store.mutations_for("c1")
+    assert [m.seq for m in recorded] == [0, 1]
+    assert [m.category for m in recorded] == ["parameter", "structural"]
+    assert [m.rng_seed for m in recorded] == [11, 12]
+    assert recorded[1].suggested_by == "llm"
+
+    factory = make_session_factory(db_engine)
+    with pytest.raises(ImmutableRowError, match="append-only"), session_scope(factory) as session:
+        row = session.get(Mutation, recorded[0].mutation_id)
+        assert row is not None
+        row.after_json = "999"
+        session.flush()
+
+
+def test_a_mutation_sequence_is_unique_within_a_candidate(
+    store: SqliteExperimentStore,
+) -> None:
+    _evolution(store)
+    _candidate(store, "c0")
+    _candidate(store, "c1", origin="mutant", parent="c0")
+    entry = {
+        "parent_candidate_id": "c0",
+        "category": "parameter",
+        "operator": "perturb_numeric",
+        "target": "params.fast",
+        "before_json": "20",
+        "after_json": "24",
+        "rng_seed": 1,
+        "seq": 0,
+    }
+    store.add_mutations("c1", [entry])
+    with pytest.raises(IntegrityError):
+        store.add_mutations("c1", [dict(entry)])
+
+
+def test_a_partly_written_mutation_sequence_is_not_persisted(
+    store: SqliteExperimentStore,
+) -> None:
+    """Half a lineage is not a lineage: the whole sequence lands or none of it."""
+    _evolution(store)
+    _candidate(store, "c0")
+    _candidate(store, "c1", origin="mutant", parent="c0")
+    good = {
+        "parent_candidate_id": "c0",
+        "category": "parameter",
+        "operator": "perturb_numeric",
+        "target": "params.fast",
+        "before_json": "20",
+        "after_json": "24",
+        "rng_seed": 1,
+    }
+    with pytest.raises(IntegrityError):
+        store.add_mutations("c1", [good, {**good, "category": "not-a-category"}])
+    assert store.mutations_for("c1") == []
+
+
+def test_a_promotion_is_written_before_its_run(store: SqliteExperimentStore) -> None:
+    """INV-9: the validation segment is reachable only through this row, and the
+    row exists before the run it authorises. Written afterwards it would be a log
+    of a decision already taken, not a gate."""
+    _evolution(store)
+    _candidate(store, "c0")
+    promotion = store.record_promotion(
+        candidate_id="c0",
+        evolution_id="ev0",
+        gen_index=0,
+        segment="val",
+        reason="top of generation 0",
+    )
+    assert promotion.run_id is None
+    assert promotion.verdict_id is None
+    assert promotion.segment == "val"
+    assert promotion.created_at
+
+
+def test_a_promotions_result_is_attached_afterwards(store: SqliteExperimentStore) -> None:
+    run, _ = _run(store, "r1")
+    _evolution(store)
+    _candidate(store, "c0")
+    assert run.run_id == "r1"
+    promotion = store.record_promotion(
+        candidate_id="c0", evolution_id="ev0", gen_index=0, segment="val", reason="why"
+    )
+    verdict = store.save_verdict(
+        strategy_id="s0",
+        split_id=run.split_id,
+        params_json="{}",
+        verdict="CANDIDATE",
+        overfit_score=0.2,
+        hard_gates_json="{}",
+        soft_checks_json="{}",
+        thresholds_json="{}",
+        n_trials_accounted=16,
+    )
+    attached = store.attach_promotion_result(
+        promotion.promotion_id, run_id="r1", verdict_id=verdict.verdict_id
+    )
+    assert attached.run_id == "r1"
+    assert attached.verdict_id == verdict.verdict_id
+    assert [p.promotion_id for p in store.promotions_for("c0")] == [promotion.promotion_id]
+
+
+@pytest.mark.parametrize("column", ["segment", "reason", "gen_index", "candidate_id"])
+def test_a_promotions_identity_is_immutable(
+    db_engine: Engine, store: SqliteExperimentStore, column: str
+) -> None:
+    _evolution(store)
+    _candidate(store, "c0")
+    promotion = store.record_promotion(
+        candidate_id="c0", evolution_id="ev0", gen_index=0, segment="val", reason="why"
+    )
+    factory = make_session_factory(db_engine)
+    with pytest.raises(ImmutableRowError), session_scope(factory) as session:
+        row = session.get(CandidatePromotion, promotion.promotion_id)
+        assert row is not None
+        setattr(row, column, 9 if column == "gen_index" else "changed")
+        session.flush()
+
+
+def test_lineage_is_complete_and_reaches_a_seed(store: SqliteExperimentStore) -> None:
+    """INV-10: every candidate except a seed names a parent that exists, and the
+    chain reaches a seed without cycles."""
+    _evolution(store)
+    _candidate(store, "c0", origin="seed")
+    _candidate(store, "c1", origin="mutant", parent="c0", gen_index=1)
+    _candidate(store, "c2", origin="mutant", parent="c1", gen_index=2)
+    _candidate(store, "c3", origin="mutant", parent="c1", gen_index=2)
+
+    assert [c.candidate_id for c in store.ancestry("c2")] == ["c0", "c1", "c2"]
+    assert [c.candidate_id for c in store.ancestry("c0")] == ["c0"]
+    assert store.ancestry("c2")[0].origin == "seed"
+    assert sorted(c.candidate_id for c in store.descendants("c0")) == ["c1", "c2", "c3"]
+    assert sorted(c.candidate_id for c in store.descendants("c1")) == ["c2", "c3"]
+    assert store.descendants("c2") == []
+
+
+def test_candidates_are_returned_in_a_deterministic_order(
+    store: SqliteExperimentStore,
+) -> None:
+    _evolution(store)
+    for index in range(4):
+        _candidate(store, f"c{index}", gen_index=index % 2)
+    everything = [c.candidate_id for c in store.candidates_for("ev0")]
+    assert everything == sorted(everything, key=lambda cid: (int(cid[1]) % 2, cid))
+    assert [c.candidate_id for c in store.candidates_for("ev0", gen_index=1)] == ["c1", "c3"]
+    assert store.candidates_for("ev0", gen_index=9) == []
+    assert store.candidates_for("nope") == []
+
+
+def test_generations_are_returned_in_index_order(store: SqliteExperimentStore) -> None:
+    _evolution(store)
+    for index in (3, 1, 2):
+        store.add_generation(
+            generation_id=f"g{index}",
+            evolution_id="ev0",
+            gen_index=index,
+            diversity=0.5,
+            n_evaluated=16,
+            n_cache_hits=0,
+            n_rejected_by_gate=0,
+            n_immigrants_used=1,
+        )
+    assert [g.gen_index for g in store.generations_for("ev0")] == [0, 1, 2, 3]
+
+
+def test_a_candidate_cannot_cite_a_generation_that_does_not_exist(
+    store: SqliteExperimentStore,
+) -> None:
+    _evolution(store)
+    with pytest.raises(IntegrityError):
+        store.add_candidate(
+            candidate_id="cX",
+            evolution_id="ev0",
+            generation_id="no-such-generation",
+            gen_index=0,
+            strategy_id="s0",
+            params_json="{}",
+            kind="opaque",
+            origin="seed",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("kind", "wishful"), ("origin", "spontaneous")],
+)
+def test_a_candidates_enumerations_are_enforced(
+    store: SqliteExperimentStore, field: str, value: str
+) -> None:
+    _evolution(store)
+    fields = {
+        "candidate_id": "cX",
+        "evolution_id": "ev0",
+        "generation_id": "g0",
+        "gen_index": 0,
+        "strategy_id": "s0",
+        "params_json": "{}",
+        "kind": "genome",
+        "origin": "seed",
+    }
+    fields[field] = value
+    with pytest.raises(IntegrityError):
+        store.add_candidate(**fields)  # type: ignore[arg-type]
+
+
+def test_an_opaque_candidate_may_have_no_genome(store: SqliteExperimentStore) -> None:
+    """Section 13.4: ``opaque`` candidates admit parameter mutations only, and
+    have no genome to record."""
+    _evolution(store)
+    opaque = store.add_candidate(
+        candidate_id="cOpaque",
+        evolution_id="ev0",
+        generation_id="g0",
+        gen_index=0,
+        strategy_id="s0",
+        params_json="{}",
+        kind="opaque",
+        origin="immigrant",
+    )
+    assert opaque.genome_json is None

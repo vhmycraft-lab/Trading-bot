@@ -175,6 +175,33 @@ class StubExperimentStore:
     def record_lockbox_access(self, **_kwargs: Any) -> Any:
         return None
 
+    def create_evolution_run(self, **_fields: Any) -> Any:
+        return None
+
+    def finish_evolution_run(self, evolution_id: str, status: str, *_a: Any, **_k: Any) -> Any:
+        return None
+
+    def add_generation(self, **_fields: Any) -> Any:
+        return None
+
+    def add_candidate(self, **_fields: Any) -> Any:
+        return None
+
+    def add_mutations(self, candidate_id: str, mutations: Any) -> None:
+        return None
+
+    def record_promotion(self, **_fields: Any) -> Any:
+        return None
+
+    def candidates_for(self, evolution_id: str, gen_index: int | None = None) -> list[Any]:
+        return []
+
+    def ancestry(self, candidate_id: str) -> list[Any]:
+        return []
+
+    def descendants(self, candidate_id: str) -> list[Any]:
+        return []
+
 
 class StubArtifactStore:
     def __init__(self, root: Path) -> None:

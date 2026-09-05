@@ -2054,7 +2054,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T18 | AMENDED — **done** | `sandbox/{protocol,guards,runner,child_main}.py`; the child runs the engine, named in the request and constrained to `quantlab.adapters.engine.*` (ADR 0004) |
 | T19 | AMENDED — **done** | `core/validation/leakage.py`, four leaky and four honest fixtures, `tests/leakage/`; three tail replacements rather than one, and stated comparison horizons (1.1.7) |
 | T20 | AMENDED — **done for source-loaded strategies** | `strategies_io/loader.py`, `strategies_io/probe.py`, `SourceStore` port + `FileSourceStore`, `ExperimentStore.get_strategy_version`. Vectorised strategies are probed at load through the sandbox (§9.1, T19). **Deferred:** `kind='genome'` and `genome_json` (no column before migration `0002`; needs T45/T46) |
-| T21 | AMENDED — **done for the 13 base tables** | `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001`, `ports/store.py` grown to §11.1. **Remaining:** migration `0002` for the five evolution tables and the evolution methods on the store port |
+| T21 | AMENDED — **done** | `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001` and `0002`, `ports/store.py` grown to §11.1 including the evolution methods; the five evolution tables, their append-only rules and lineage queries |
 | T22–T23 | unchanged | — |
 | T24 | SUPERSEDED by T47/T51 | Optuna demoted to refinement (§13.8); objectives retained |
 | T25 | AMENDED | plateau selection becomes **mandatory** before validation |
@@ -2124,7 +2124,7 @@ AC: `test_splits.py` + property test; printing the policy shows bar counts per s
 
 ### Phase E — Store & CLI
 
-**T21 SQLite store.** `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001`. AC: `test_store.py`; `alembic upgrade head` on empty DB; immutability enforced.
+**T21 SQLite store.** `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001`. AC: `test_store.py`; `alembic upgrade head` on empty DB; immutability enforced. — **done**, including the amendment: migration `0002` adds `evolution_run`, `generation`, `candidate`, `mutation` and `candidate_promotion`; `mutation` is deliberately absent from `MUTABLE_COLUMNS` because it is the record INV-10 replays; a promotion is written before the run it authorises (INV-9); `n_evaluations` is kept by the store because §14.4's `M` counts cached evaluations too.
 **T22 Runner & caching.** `experiments/runner.py`, `cli/backtest.py`. AC: `test_runner.py`; running the same backtest twice shows `cache_hit=true` in logs; `--force` re-runs.
 **T23 Reports & reproduce.** `reporting/`, `cli/report.py`, `quantlab reproduce`. AC: `test_reproduce.py` (INV-7) passes for golden runs; report Markdown + PNG created offline.
 

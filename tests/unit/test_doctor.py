@@ -7,10 +7,22 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
+from quantlab.adapters.store.sqlite import migrations_dir
 from quantlab.cli import doctor as doctor_module
 from quantlab.cli.doctor import Check, run_checks, worst_exit_code
 from quantlab.core.config import AppConfig, load_config
 from quantlab.core.errors import EXIT_CODES
+
+
+def _head_revision() -> str:
+    """The newest migration on disk.
+
+    Asserted against rather than a literal, so adding a migration updates the
+    expectation by existing rather than by someone remembering to edit a string.
+    """
+    versions = sorted((migrations_dir() / "versions").glob("[0-9]*.py"))
+    assert versions, "no migrations found"
+    return versions[-1].name.split("_", 1)[0]
 
 
 class StubSecrets:
@@ -111,7 +123,7 @@ def test_database_states(tmp_path: Path, default_config_path: Path) -> None:
 
     checks = _by_name(run_checks(config, StubSecrets()))
     assert checks["database"].status == "ok"
-    assert "0001" in checks["database"].detail
+    assert _head_revision() in checks["database"].detail
     assert checks["database:schema"].status == "ok"
 
 

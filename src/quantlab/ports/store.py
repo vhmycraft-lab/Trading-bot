@@ -267,6 +267,45 @@ class ExperimentStore(Protocol):
         """Record that a model was asked something, and what it cost."""
         ...
 
+    # -- evolution (spec section 13) ---------------------------------------
+    def create_evolution_run(self, **fields: Any) -> Any:
+        """Open an evolution run, recording the search it is about to perform."""
+        ...
+
+    def finish_evolution_run(
+        self, evolution_id: str, status: str, stop_reason: str | None = ...
+    ) -> Any:
+        """Close an evolution run and say why it stopped."""
+        ...
+
+    def add_generation(self, **fields: Any) -> Any:
+        """Record one completed generation. Append-only."""
+        ...
+
+    def add_candidate(self, **fields: Any) -> Any:
+        """Record a candidate as it enters the population, before evaluation."""
+        ...
+
+    def add_mutations(self, candidate_id: str, mutations: Sequence[Mapping[str, Any]]) -> None:
+        """Record the edits that produced a child. Append-only; never updated (INV-10)."""
+        ...
+
+    def record_promotion(self, **fields: Any) -> Any:
+        """Record a promotion **before** the run it authorises executes (INV-9)."""
+        ...
+
+    def candidates_for(self, evolution_id: str, gen_index: int | None = ...) -> list[Any]:
+        """A run's candidates, deterministically ordered."""
+        ...
+
+    def ancestry(self, candidate_id: str) -> list[Any]:
+        """Every ancestor of a candidate, oldest first, ending with itself."""
+        ...
+
+    def descendants(self, candidate_id: str) -> list[Any]:
+        """Every candidate reachable from this one by following parent links down."""
+        ...
+
     def record_lockbox_access(
         self,
         *,

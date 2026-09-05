@@ -9,8 +9,20 @@ import pytest
 from typer.testing import CliRunner
 
 from quantlab import __version__
+from quantlab.adapters.store.sqlite import migrations_dir
 from quantlab.cli import app
 from quantlab.core.errors import EXIT_CODES
+
+
+def _head_revision() -> str:
+    """The newest migration on disk.
+
+    Asserted against rather than a literal, so adding a migration updates the
+    expectation by existing rather than by someone remembering to edit a string.
+    """
+    versions = sorted((migrations_dir() / "versions").glob("[0-9]*.py"))
+    assert versions, "no migrations found"
+    return versions[-1].name.split("_", 1)[0]
 
 
 @pytest.fixture
@@ -114,11 +126,11 @@ def test_db_info_before_and_after_upgrade(cli: CliRunner, project: Path) -> None
 
     upgraded = cli.invoke(app, ["db", "upgrade"])
     assert upgraded.exit_code == 0, upgraded.output
-    assert "0001" in upgraded.stdout
+    assert _head_revision() in upgraded.stdout
 
     after = cli.invoke(app, ["db", "info"])
     assert after.exit_code == 0
-    assert "0001" in after.stdout
+    assert _head_revision() in after.stdout
     assert "all present" in after.stdout
 
 

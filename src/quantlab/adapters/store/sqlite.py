@@ -32,11 +32,16 @@ from sqlalchemy.orm.state import InstanceState
 from quantlab.adapters.store.models import (
     MUTABLE_COLUMNS,
     TABLE_NAMES,
+    Candidate,
+    CandidatePromotion,
     Dataset,
+    EvolutionRun,
     Experiment,
+    Generation,
     LlmInteraction,
     LockboxAccess,
     Metric,
+    Mutation,
     OptunaStudy,
     PaperSession,
     Run,
@@ -1007,6 +1012,377 @@ class SqliteExperimentStore:
             if stopped_at is not None:
                 row.stopped_at = int(stopped_at)
             return row
+
+    # -- evolution (spec section 13) ---------------------------------------
+    def create_evolution_run(
+        self,
+        *,
+        evolution_id: str,
+        experiment_id: str,
+        campaign: str,
+        dataset_id: str,
+        split_id: str,
+        population_size: int,
+        n_survivors: int,
+        n_offspring: int,
+        n_immigrants: int,
+        max_generations: int,
+        seed: int,
+        fitness_config_json: str,
+        mutation_config_json: str,
+        diversity_config_json: str,
+    ) -> EvolutionRun:
+        """Open an evolution run in ``running``.
+
+        The three configuration blobs are stored verbatim, not summarised: §14.4
+        needs to know what search actually happened, and a run whose fitness
+        weights were reconstructed from today's config file is not the run that
+        produced the numbers.
+        """
+        with session_scope(self.factory) as session:
+            existing = session.get(EvolutionRun, evolution_id)
+            if existing is not None:
+                _require_same(
+                    "evolution_run",
+                    evolution_id,
+                    existing,
+                    {"experiment_id": experiment_id, "seed": int(seed)},
+                )
+                return existing
+            row = EvolutionRun(
+                evolution_id=evolution_id,
+                experiment_id=experiment_id,
+                campaign=campaign,
+                dataset_id=dataset_id,
+                split_id=split_id,
+                population_size=int(population_size),
+                n_survivors=int(n_survivors),
+                n_offspring=int(n_offspring),
+                n_immigrants=int(n_immigrants),
+                max_generations=int(max_generations),
+                seed=int(seed),
+                fitness_config_json=fitness_config_json,
+                mutation_config_json=mutation_config_json,
+                diversity_config_json=diversity_config_json,
+                n_evaluations=0,
+                status="running",
+                stop_reason=None,
+                started_at=self._now(),
+                finished_at=None,
+                created_at=self._now(),
+            )
+            session.add(row)
+            return row
+
+    def finish_evolution_run(
+        self, evolution_id: str, status: str, stop_reason: str | None = None
+    ) -> EvolutionRun:
+        """Close an evolution run and say why it stopped."""
+        with session_scope(self.factory) as session:
+            row = self._require_row(session, EvolutionRun, evolution_id, "evolution_run")
+            if row.status != "running":
+                raise RunConflict(
+                    "evolution run is already finished",
+                    evolution_id=evolution_id,
+                    status=row.status,
+                )
+            row.status = status
+            row.stop_reason = stop_reason
+            row.finished_at = self._now()
+            return row
+
+    def count_evaluation(self, evolution_id: str, n: int = 1) -> int:
+        """Add ``n`` to the run's evaluation count; return the new total.
+
+        This number is ``M`` in the deflated Sharpe ratio (§14.4). It is kept by
+        the store rather than recomputed from rows because a cached evaluation is
+        still an evaluation — it was tried, and the correction has to know.
+        """
+        with session_scope(self.factory) as session:
+            row = self._require_row(session, EvolutionRun, evolution_id, "evolution_run")
+            row.n_evaluations += int(n)
+            return int(row.n_evaluations)
+
+    def add_generation(
+        self,
+        *,
+        generation_id: str,
+        evolution_id: str,
+        gen_index: int,
+        diversity: float,
+        n_evaluated: int,
+        n_cache_hits: int,
+        n_rejected_by_gate: int,
+        n_immigrants_used: int,
+        stats_json: str = "{}",
+        best_fitness: float | None = None,
+        median_fitness: float | None = None,
+        mean_fitness: float | None = None,
+    ) -> Generation:
+        """Record one completed generation. Append-only: a generation never changes."""
+        with session_scope(self.factory) as session:
+            row = Generation(
+                generation_id=generation_id,
+                evolution_id=evolution_id,
+                gen_index=int(gen_index),
+                best_fitness=best_fitness,
+                median_fitness=median_fitness,
+                mean_fitness=mean_fitness,
+                diversity=float(diversity),
+                n_evaluated=int(n_evaluated),
+                n_cache_hits=int(n_cache_hits),
+                n_rejected_by_gate=int(n_rejected_by_gate),
+                n_immigrants_used=int(n_immigrants_used),
+                stats_json=stats_json,
+                created_at=self._now(),
+            )
+            session.add(row)
+            return row
+
+    def add_candidate(
+        self,
+        *,
+        candidate_id: str,
+        evolution_id: str,
+        generation_id: str,
+        gen_index: int,
+        strategy_id: str,
+        params_json: str,
+        kind: str,
+        origin: str,
+        genome_json: str | None = None,
+        parent_candidate_id: str | None = None,
+        signature_json: str = "{}",
+    ) -> Candidate:
+        """Record a candidate as it enters the population, before it is evaluated.
+
+        Its scores are written later through :meth:`score_candidate`: a candidate
+        that failed is still a candidate, and §13.2 requires it to stay in the
+        record rather than vanish from the generation it was part of.
+        """
+        with session_scope(self.factory) as session:
+            existing = session.get(Candidate, candidate_id)
+            if existing is not None:
+                _require_same(
+                    "candidate",
+                    candidate_id,
+                    existing,
+                    {"evolution_id": evolution_id, "params_json": params_json},
+                )
+                return existing
+            row = Candidate(
+                candidate_id=candidate_id,
+                evolution_id=evolution_id,
+                generation_id=generation_id,
+                gen_index=int(gen_index),
+                strategy_id=strategy_id,
+                params_json=params_json,
+                genome_json=genome_json,
+                kind=kind,
+                origin=origin,
+                parent_candidate_id=parent_candidate_id,
+                run_id=None,
+                components_json="{}",
+                penalties_json="{}",
+                survived=0,
+                signature_json=signature_json,
+                created_at=self._now(),
+            )
+            session.add(row)
+            return row
+
+    def score_candidate(
+        self,
+        candidate_id: str,
+        *,
+        run_id: str | None = None,
+        fitness: float | None = None,
+        base_score: float | None = None,
+        penalty_product: float | None = None,
+        components_json: str | None = None,
+        penalties_json: str | None = None,
+        gate_failure: str | None = None,
+        rank: int | None = None,
+        survived: bool | None = None,
+        behaviour_hash: str | None = None,
+    ) -> Candidate:
+        """Write a candidate's evaluation. Exactly the columns §6 allows to change."""
+        with session_scope(self.factory) as session:
+            row = self._require_row(session, Candidate, candidate_id, "candidate")
+            for name, value in (
+                ("run_id", run_id),
+                ("fitness", fitness),
+                ("base_score", base_score),
+                ("penalty_product", penalty_product),
+                ("components_json", components_json),
+                ("penalties_json", penalties_json),
+                ("gate_failure", gate_failure),
+                ("rank", rank),
+                ("behaviour_hash", behaviour_hash),
+            ):
+                if value is not None:
+                    setattr(row, name, value)
+            if survived is not None:
+                row.survived = int(bool(survived))
+            return row
+
+    def add_mutations(self, candidate_id: str, mutations: Sequence[Mapping[str, Any]]) -> None:
+        """Record the edits that produced a child, in order.
+
+        Append-only and never updated: re-applying these to the parent's genome
+        must reproduce the child byte for byte (INV-10), which it cannot do if the
+        record can be revised after the fact. The whole sequence lands in one
+        transaction, because half a lineage is not a lineage.
+        """
+        with session_scope(self.factory) as session:
+            for seq, mutation in enumerate(mutations):
+                fields = dict(mutation)
+                session.add(
+                    Mutation(
+                        mutation_id=fields.pop("mutation_id", None) or _event_id(),
+                        candidate_id=candidate_id,
+                        parent_candidate_id=str(fields.pop("parent_candidate_id")),
+                        seq=int(fields.pop("seq", seq)),
+                        category=str(fields.pop("category")),
+                        operator=str(fields.pop("operator")),
+                        target=str(fields.pop("target")),
+                        before_json=str(fields.pop("before_json")),
+                        after_json=str(fields.pop("after_json")),
+                        rng_seed=int(fields.pop("rng_seed")),
+                        suggested_by=str(fields.pop("suggested_by", "rng")),
+                        llm_interaction_id=fields.pop("llm_interaction_id", None),
+                        created_at=self._now(),
+                    )
+                )
+
+    def mutations_for(self, candidate_id: str) -> list[Mutation]:
+        """A candidate's edits, in application order."""
+        with session_scope(self.factory) as session:
+            rows = (
+                session.execute(select(Mutation).where(Mutation.candidate_id == candidate_id))
+                .scalars()
+                .all()
+            )
+        return sorted(rows, key=lambda r: r.seq)
+
+    def record_promotion(
+        self,
+        *,
+        candidate_id: str,
+        evolution_id: str,
+        gen_index: int,
+        segment: str,
+        reason: str,
+        promotion_id: str | None = None,
+    ) -> CandidatePromotion:
+        """Record a promotion **before** the run it authorises executes (INV-9).
+
+        The validation segment is reachable only through a row in this table. The
+        order matters and is the invariant: a promotion written after its run
+        would document a decision already taken, which is a log, not a gate.
+        """
+        with session_scope(self.factory) as session:
+            row = CandidatePromotion(
+                promotion_id=promotion_id or _event_id(),
+                candidate_id=candidate_id,
+                evolution_id=evolution_id,
+                gen_index=int(gen_index),
+                segment=segment,
+                run_id=None,
+                verdict_id=None,
+                reason=reason,
+                created_at=self._now(),
+            )
+            session.add(row)
+            return row
+
+    def attach_promotion_result(
+        self, promotion_id: str, *, run_id: str | None = None, verdict_id: str | None = None
+    ) -> CandidatePromotion:
+        """Attach the run and verdict a promotion produced (the §6 mutable columns)."""
+        with session_scope(self.factory) as session:
+            row = self._require_row(
+                session, CandidatePromotion, promotion_id, "candidate_promotion"
+            )
+            if run_id is not None:
+                row.run_id = run_id
+            if verdict_id is not None:
+                row.verdict_id = verdict_id
+            return row
+
+    def promotions_for(self, candidate_id: str) -> list[CandidatePromotion]:
+        with session_scope(self.factory) as session:
+            rows = (
+                session.execute(
+                    select(CandidatePromotion).where(
+                        CandidatePromotion.candidate_id == candidate_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return sorted(rows, key=lambda r: (r.created_at, r.promotion_id))
+
+    def candidates_for(self, evolution_id: str, gen_index: int | None = None) -> list[Candidate]:
+        """A run's candidates, oldest generation first, deterministically ordered."""
+        statement = select(Candidate).where(Candidate.evolution_id == evolution_id)
+        if gen_index is not None:
+            statement = statement.where(Candidate.gen_index == int(gen_index))
+        with session_scope(self.factory) as session:
+            rows = session.execute(statement).scalars().all()
+        return sorted(rows, key=lambda r: (r.gen_index, r.created_at, r.candidate_id))
+
+    def generations_for(self, evolution_id: str) -> list[Generation]:
+        with session_scope(self.factory) as session:
+            rows = (
+                session.execute(select(Generation).where(Generation.evolution_id == evolution_id))
+                .scalars()
+                .all()
+            )
+        return sorted(rows, key=lambda r: r.gen_index)
+
+    def ancestry(self, candidate_id: str) -> list[Candidate]:
+        """Every ancestor of a candidate, oldest first, ending with itself.
+
+        INV-10 requires the parent chain to reach a seed without cycles. The walk
+        is bounded by what it has already seen, so a cycle that reached the
+        database anyway reports rather than hangs.
+        """
+        chain: list[Candidate] = []
+        seen: set[str] = set()
+        with session_scope(self.factory) as session:
+            current: Candidate | None = self._require_row(
+                session, Candidate, candidate_id, "candidate"
+            )
+            while current is not None and current.candidate_id not in seen:
+                chain.append(current)
+                seen.add(current.candidate_id)
+                parent = current.parent_candidate_id
+                current = None if parent is None else session.get(Candidate, parent)
+        return list(reversed(chain))
+
+    def descendants(self, candidate_id: str) -> list[Candidate]:
+        """Every candidate reachable from this one by following parent links down."""
+        found: list[Candidate] = []
+        seen = {candidate_id}
+        frontier = [candidate_id]
+        with session_scope(self.factory) as session:
+            while frontier:
+                rows = (
+                    session.execute(
+                        select(Candidate).where(Candidate.parent_candidate_id.in_(frontier))
+                    )
+                    .scalars()
+                    .all()
+                )
+                frontier = []
+                for row in sorted(rows, key=lambda r: (r.gen_index, r.candidate_id)):
+                    if row.candidate_id in seen:
+                        continue
+                    seen.add(row.candidate_id)
+                    found.append(row)
+                    frontier.append(row.candidate_id)
+        return found
 
     # -- internals ----------------------------------------------------------
     def _require_row(self, session: Session, model: type[_R], key: str, table: str) -> _R:
