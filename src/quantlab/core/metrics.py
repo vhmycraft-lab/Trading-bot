@@ -29,6 +29,9 @@ __all__ = [
     "compute_metrics",
     "drawdown_series",
     "retention_after_removing_top_winners",
+    "trade_expectancy_pct",
+    "trade_profit_factor",
+    "trade_win_rate",
 ]
 
 #: Fewer trades than this and every statistic below is decoration, not evidence.
@@ -133,6 +136,52 @@ def _max_drawdown_bars(equity: np.ndarray) -> int:
     if under_water:
         longest = max(longest, values.size - 1 - peak_index)
     return longest
+
+
+def trade_win_rate(trades: Sequence[Trade]) -> float | None:
+    """Share of round trips that closed in profit; ``None`` with no trades."""
+    if not trades:
+        return None
+    wins = sum(1 for trade in trades if trade.pnl > 0)
+    return wins / len(trades)
+
+
+def trade_profit_factor(trades: Sequence[Trade]) -> float | None:
+    """Gross profit over gross loss (spec section 10).
+
+    ``None`` when nothing was lost: the ratio is unbounded there, and reporting a
+    huge number would read as a strong result rather than as an absent
+    denominator.  Callers that score it treat ``None`` as perfect *and* raise the
+    low-trade warning, which is what section 13.3 requires.
+    """
+    if not trades:
+        return None
+    pnls = np.array([trade.pnl for trade in trades], dtype="float64")
+    gross_loss = float(np.abs(pnls[pnls < 0].sum()))
+    if gross_loss <= _EPS:
+        return None
+    return float(pnls[pnls > 0].sum()) / gross_loss
+
+
+def trade_expectancy_pct(trades: Sequence[Trade]) -> float | None:
+    """Expected return per trade as a fraction (spec section 10).
+
+    ``win_rate * mean win% - (1 - win_rate) * mean |loss%|``.  Extracted so that
+    the trade-removal test of section 14.4 recomputes it with the same rule
+    rather than with a second one that could drift.
+    """
+    if not trades:
+        return None
+    rate = trade_win_rate(trades)
+    if rate is None:  # pragma: no cover - guarded by the emptiness check above
+        return None
+    pnls = np.array([trade.pnl for trade in trades], dtype="float64")
+    pnl_pcts = np.array([trade.pnl_pct for trade in trades], dtype="float64")
+    win_pcts = pnl_pcts[pnls > 0]
+    loss_pcts = pnl_pcts[pnls < 0]
+    mean_win = float(win_pcts.mean()) if win_pcts.size else 0.0
+    mean_loss = float(np.abs(loss_pcts.mean())) if loss_pcts.size else 0.0
+    return rate * mean_win - (1.0 - rate) * mean_loss
 
 
 def retention_after_removing_top_winners(
@@ -266,21 +315,10 @@ def compute_metrics(
     pnls = np.array([trade.pnl for trade in trades], dtype="float64")
     pnl_pcts = np.array([trade.pnl_pct for trade in trades], dtype="float64")
     wins = pnls[pnls > 0]
-    losses = pnls[pnls < 0]
 
-    win_rate = float(wins.size / n_trades) if n_trades else None
-    profit_factor: float | None = None
-    if n_trades:
-        gross_loss = float(np.abs(losses.sum()))
-        profit_factor = float(wins.sum()) / gross_loss if gross_loss > _EPS else None
-
-    expectancy_pct: float | None = None
-    if n_trades and win_rate is not None:
-        win_pcts = pnl_pcts[pnls > 0]
-        loss_pcts = pnl_pcts[pnls < 0]
-        mean_win = float(win_pcts.mean()) if win_pcts.size else 0.0
-        mean_loss = float(np.abs(loss_pcts.mean())) if loss_pcts.size else 0.0
-        expectancy_pct = win_rate * mean_win - (1.0 - win_rate) * mean_loss
+    win_rate = trade_win_rate(trades)
+    profit_factor = trade_profit_factor(trades)
+    expectancy_pct = trade_expectancy_pct(trades)
 
     top5_share: float | None = None
     if n_trades and float(wins.sum()) > _EPS:
