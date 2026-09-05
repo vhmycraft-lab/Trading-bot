@@ -268,22 +268,22 @@ def test_the_compiler_itself_executes_nothing() -> None:
     assert not called & {"exec", "eval", "compile", "__import__", "open"}
 
 
-def test_generated_source_is_stable_under_the_repository_formatter(tmp_path: Path) -> None:
-    """A file the project's own formatter would rewrite is a file whose
-    ``strategy_id`` is one ``make format`` away from changing."""
-    ruff = Path(sys.executable).parent / "ruff"
-    if not ruff.is_file():  # pragma: no cover - ruff is a dev dependency
-        pytest.skip("ruff is not installed next to the interpreter")
-    path = tmp_path / "generated.py"
-    path.write_text(compile_genome(sma_cross_genome()), encoding="utf-8")
-    done = subprocess.run(
-        [str(ruff), "format", "--check", "--isolated", str(path)],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
-    assert done.returncode == 0, done.stdout + done.stderr
+def test_the_generated_tree_is_excluded_from_the_repository_formatter() -> None:
+    """Generated source is stored under the hash of its own bytes, so a
+    ``make format`` that rewrote it would change the ``strategy_id`` every run
+    cites and split the cache of section 11.2.
+
+    The guarantee is the exclude, not the layout: the compiler emits readable
+    Python, but chasing a formatter's exact line-splitting for arbitrary boolean
+    expressions would be a claim it could not keep.
+    """
+    config = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "strategies/generated" in config
+
+    source = compile_genome(sma_cross_genome())
+    assert "\t" not in source
+    assert source.endswith("\n")
+    assert not any(line.rstrip() != line for line in source.splitlines())
 
 
 def test_the_class_name_is_derived_from_the_genome_name() -> None:

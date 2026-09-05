@@ -143,9 +143,9 @@ def _filters_source(
 def _join(parts: list[str], *, joiner: str, empty: str) -> str:
     """Combine boolean sub-expressions, parenthesising only where it disambiguates.
 
-    A single condition is emitted bare. The redundant parentheses a formatter
-    would strip are worth avoiding: generated source is stored under the hash of
-    its own bytes, so anything that rewrites it changes the strategy id.
+    A single condition is emitted bare: the parentheses would carry no meaning,
+    and generated source is read by people often enough to be worth keeping
+    plain.
     """
     if not parts:
         return empty
@@ -227,12 +227,17 @@ def compile_genome(genome: StrategyGenome) -> str:
         f"{_INDENT}version = {_text(genome.version)}",
         f'{_INDENT}style = "bar_loop"',
         "",
-        f"{_INDENT}params = {{",
     ]
-    for key in sorted(genome.params):
-        lines.append(f"{_INDENT * 2}{_text(key)}: {_param_source(genome.params[key])},")
+    if genome.params:
+        lines.append(f"{_INDENT}params = {{")
+        for key in sorted(genome.params):
+            lines.append(f"{_INDENT * 2}{_text(key)}: {_param_source(genome.params[key])},")
+        lines.append(f"{_INDENT}}}")
+    else:
+        # `{}` on one line: the formatter collapses an empty literal, and a
+        # generated file it would rewrite is one whose id `make format` changes.
+        lines.append(f"{_INDENT}params = {{}}")
     lines += [
-        f"{_INDENT}}}",
         f"{_INDENT}warmup_bars = {genome.warmup_bars}",
         f"{_INDENT}risk = {_spec_source('RiskSpec', genome.risk)}",
         f"{_INDENT}sizing = {_spec_source('SizingSpec', genome.sizing)}",

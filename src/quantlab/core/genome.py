@@ -47,12 +47,20 @@ __all__ = [
     "GENOME_INDICATORS",
     "MULTI_OUTPUT_INDICATORS",
     "PRICE_COLUMNS",
+    "PRICE_DOMAINS",
     "Condition",
     "ConditionTree",
+    "Domain",
     "IndicatorSignature",
     "Operand",
     "StrategyGenome",
     "genome_id",
+]
+
+
+#: The units a value is measured in (see :attr:`IndicatorSignature.domain`).
+Domain = Literal[
+    "price", "range", "volume", "oscillator", "zscore", "ratio", "percent", "volatility"
 ]
 
 
@@ -73,6 +81,14 @@ class IndicatorSignature:
     min_period: int = 1
     #: Bars consumed beyond the period itself, e.g. the extra bar a return needs.
     extra: int = 0
+    #: What the indicator's values are measured in.
+    #:
+    #: A fact about the indicator, recorded here because it is the only place
+    #: that knows all of them. Genome *validity* ignores it — comparing a moving
+    #: average against a fixed price level is a legitimate strategy — but the
+    #: operator library of section 13.4 uses it to draw comparisons that mean
+    #: something, rather than pairing an RSI against a Bitcoin price.
+    domain: Domain = "price"
 
     def lookback(self, period: int) -> int:
         return int(period) + self.extra
@@ -80,21 +96,30 @@ class IndicatorSignature:
 
 #: Indicators a genome may name, and the warm-up each implies (spec section 9.6).
 GENOME_INDICATORS: Final[Mapping[str, IndicatorSignature]] = {
-    "atr": IndicatorSignature(extra=1),
-    "ema": IndicatorSignature(),
-    "highest": IndicatorSignature(),
-    "log_returns": IndicatorSignature(extra=1),
-    "lowest": IndicatorSignature(),
-    "returns": IndicatorSignature(extra=1),
-    "roc": IndicatorSignature(extra=1),
-    "rolling_vol": IndicatorSignature(min_period=2, extra=1),
-    "rsi": IndicatorSignature(extra=1),
-    "sma": IndicatorSignature(),
-    "zscore": IndicatorSignature(min_period=2),
+    "atr": IndicatorSignature(extra=1, domain="range"),
+    "ema": IndicatorSignature(domain="price"),
+    "highest": IndicatorSignature(domain="price"),
+    "log_returns": IndicatorSignature(extra=1, domain="ratio"),
+    "lowest": IndicatorSignature(domain="price"),
+    "returns": IndicatorSignature(extra=1, domain="ratio"),
+    "roc": IndicatorSignature(extra=1, domain="percent"),
+    "rolling_vol": IndicatorSignature(min_period=2, extra=1, domain="volatility"),
+    "rsi": IndicatorSignature(extra=1, domain="oscillator"),
+    "sma": IndicatorSignature(domain="price"),
+    "zscore": IndicatorSignature(min_period=2, domain="zscore"),
 }
 
 #: Indicators that return a named tuple, and so cannot be a genome operand yet.
 MULTI_OUTPUT_INDICATORS: Final[frozenset[str]] = frozenset({"bbands", "donchian", "macd"})
+
+#: What a price column is measured in, by the same rule as :attr:`IndicatorSignature.domain`.
+PRICE_DOMAINS: Final[Mapping[str, Domain]] = {
+    "open": "price",
+    "high": "price",
+    "low": "price",
+    "close": "price",
+    "volume": "volume",
+}
 
 #: Bar columns an operand may read. Deliberately the price and volume columns
 #: only: ``ts_open`` is a clock, and ``is_gap_filled`` is a data-quality flag that
@@ -243,6 +268,19 @@ class Operand(BaseModel):
         if spec is None or spec.high is None:
             raise ValueError(f"parameter {reference!r} has no upper bound to cost a lookback at")
         return signature.lookback(int(spec.high))
+
+    @property
+    def domain(self) -> Domain | None:
+        """What this operand's values are measured in, or ``None`` if unitless.
+
+        A ``param`` or ``constant`` takes its meaning from whatever it is
+        compared against, so neither carries a domain of its own.
+        """
+        if self.kind == "indicator":
+            return GENOME_INDICATORS[self.name].domain
+        if self.kind == "price":
+            return PRICE_DOMAINS[self.name]
+        return None
 
     @property
     def key(self) -> str:
