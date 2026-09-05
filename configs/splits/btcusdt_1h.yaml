@@ -1,0 +1,7 @@
+split_id_note: "changing anything here creates a new split_id; old verdicts stay bound to the old id"
+symbol: BTC/USDT
+timeframe: 1h
+train:      { start: "2017-08-17T00:00:00Z", end: "2022-12-31T23:00:00Z" }
+embargo_bars: 720          # 30 days
+validation: { start: "2023-01-31T00:00:00Z", end: "2024-12-31T23:00:00Z" }
+test:       { start: "2025-01-31T00:00:00Z", end: null }   # null = latest available at lockbox time; frozen at first lockbox use

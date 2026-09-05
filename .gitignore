@@ -1,0 +1,47 @@
+# --- secrets (INV-2) -------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- generated data & artifacts -------------------------------------------
+data/*
+!data/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+strategies/generated/*
+!strategies/generated/.gitkeep
+
+# --- databases -------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# --- tooling caches --------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.json
+coverage.xml
+htmlcov/
+
+# --- os / editor -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
