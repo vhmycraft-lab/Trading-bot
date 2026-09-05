@@ -44,6 +44,7 @@ from quantlab.sandbox.guards import (
     install_import_guard,
 )
 from quantlab.sandbox.protocol import (
+    ENGINE_PACKAGE,
     EXIT_BAD_REQUEST,
     EXIT_FORBIDDEN_IMPORT,
     EXIT_INTERNAL,
@@ -99,11 +100,51 @@ def _load_engine(request: SandboxRequest) -> Any:
 
     Called before the guards go up: the engine is trusted code chosen by the
     caller, not by the strategy. The sandbox layer must not name an adapter
-    itself (INV-8), so the name travels in the request.
+    itself (INV-8), so the name travels in the request — which makes the name the
+    one thing an attacker would want to control, and the reason it is checked
+    twice.
+
+    :class:`SandboxRequest` validates the name on construction; this re-checks it
+    against the same constant at the moment of use, so a request built by any
+    route that skips validation (``model_construct``, a future refactor) still
+    cannot turn this call into "import whatever I say". The resolved object then
+    has to look like an engine before it is used as one.
+
+    Raises:
+        SandboxProtocolError: the name is outside the engine package, or what it
+            resolves to is not an engine. Fail closed: nothing is instantiated
+            speculatively to find out.
     """
-    module = importlib.import_module(request.engine_module)
-    engine_type = getattr(module, request.engine_class)
-    return engine_type()
+    name = request.engine_module
+    if not name.startswith(f"{ENGINE_PACKAGE}.") or not all(
+        part.isidentifier() and not part.startswith("_")
+        for part in name[len(ENGINE_PACKAGE) + 1 :].split(".")
+    ):
+        raise SandboxProtocolError(
+            "engine_module is outside the engine package", module=name, allowed=ENGINE_PACKAGE
+        )
+    if not request.engine_class.isidentifier() or request.engine_class.startswith("_"):
+        raise SandboxProtocolError("engine_class is not a public name", name=request.engine_class)
+
+    module = importlib.import_module(name)
+    engine_type = getattr(module, request.engine_class, None)
+    if not isinstance(engine_type, type):
+        raise SandboxProtocolError(
+            "engine_class does not name a class in the engine module",
+            module=name,
+            name=request.engine_class,
+        )
+    engine = engine_type()
+    # Structural, not nominal: quantlab.ports is off-limits to this layer (INV-8),
+    # so the contract is checked by shape. An object that cannot run a backtest
+    # must not reach the point where untrusted code is already loaded.
+    if not callable(getattr(engine, "run", None)) or not isinstance(
+        getattr(engine, "name", None), str
+    ):
+        raise SandboxProtocolError(
+            "the named class is not a backtest engine", module=name, name=request.engine_class
+        )
+    return engine
 
 
 def load_strategy(source: str) -> Strategy:

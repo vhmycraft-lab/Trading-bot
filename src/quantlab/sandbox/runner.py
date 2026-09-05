@@ -146,12 +146,6 @@ class SandboxRunner:
     #: Kept for inspection when a run fails; deleted otherwise.
     keep_failed_dirs: bool = False
     python: str = field(default_factory=lambda: sys.executable)
-    #: Extra environment for the child, on top of the scrubbed base. The runner
-    #: never populates this from the ambient environment — a caller has to ask.
-    #: Its purpose is instrumentation: the test suite forwards the coverage
-    #: variables here so the child-side code is measured like everything else.
-    #: Never put a secret in it; untrusted code runs on the other side.
-    extra_env: Mapping[str, str] = field(default_factory=dict)
 
     def run(
         self,
@@ -237,7 +231,6 @@ class SandboxRunner:
     def _child_env(self) -> dict[str, str]:
         env = dict(_BASE_ENV)
         env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
-        env.update(self.extra_env)
         # -I ignores PYTHONPATH, so the child finds quantlab the same way this
         # process did: through the installed package, not through the shell.
         return env

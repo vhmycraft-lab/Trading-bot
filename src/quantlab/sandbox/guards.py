@@ -21,6 +21,8 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, Final
 
+from quantlab.sandbox.ast_check import FORBIDDEN_MODULES
+
 __all__ = [
     "STDLIB_ALLOWED",
     "ForbiddenImport",
@@ -89,7 +91,15 @@ def import_is_allowed(name: str, allowed: frozenset[str]) -> bool:
     A submodule of an allowed module is allowed (``numpy.linalg`` follows
     ``numpy``); a parent of one is not (``quantlab`` is not opened up by
     ``quantlab.core.strategy``), because the allow-list names full module paths.
+
+    The allow-list widens what is permitted; it never re-opens what is banned.
+    ``FORBIDDEN_MODULES`` is a floor under it, so a request carrying
+    ``allowed_imports = ["os"]`` — however it came to say that — cannot hand the
+    strategy the filesystem. The AST check applies the same rule at parse time
+    (§9.2); the two layers agreeing is the point of having both.
     """
+    if name.split(".")[0] in FORBIDDEN_MODULES:
+        return False
     if name in STDLIB_ALLOWED or name in allowed:
         return True
     return any(name.startswith(f"{prefix}.") for prefix in (*allowed, *STDLIB_ALLOWED))

@@ -119,6 +119,10 @@ EXIT_STATUS: Final[dict[int, SandboxStatus]] = {
 }
 
 
+def _is_public_identifier(name: str) -> bool:
+    return name.isidentifier() and not name.startswith("_")
+
+
 class SandboxRequest(BaseModel):
     """What the parent asks the child to do.
 
@@ -153,9 +157,27 @@ class SandboxRequest(BaseModel):
         would be a general "import this module in the sandbox process" instruction,
         and the store, the LLM client and the exchange adapters would all be one
         string away from a process that also runs untrusted code.
+
+        The prefix is checked *with* its trailing dot, so a module named
+        ``...engineering`` cannot pass as one under ``...engine``, and each
+        remaining segment must be an ordinary public identifier — no ``..``, no
+        empty segment, no private module.
         """
-        if not value.startswith(f"{ENGINE_PACKAGE}."):
+        prefix = f"{ENGINE_PACKAGE}."
+        if not value.startswith(prefix):
             raise ValueError(f"engine_module must live under {ENGINE_PACKAGE}, got {value!r}")
+        tail = value[len(prefix) :]
+        if not tail or not all(_is_public_identifier(part) for part in tail.split(".")):
+            raise ValueError(f"engine_module is not a plain module path: {value!r}")
+        return value
+
+    @field_validator("engine_class")
+    @classmethod
+    def _engine_class_must_be_a_public_name(cls, value: str) -> str:
+        """A single public identifier, so the child fetches a class and not a
+        module the engine happens to have imported, nor a private internal."""
+        if not _is_public_identifier(value):
+            raise ValueError(f"engine_class must be a public identifier, got {value!r}")
         return value
 
 

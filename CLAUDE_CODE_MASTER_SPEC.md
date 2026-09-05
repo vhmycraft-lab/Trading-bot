@@ -1,13 +1,14 @@
 # CLAUDE_CODE_MASTER_SPEC.md
 
 **Project:** QuantLab — AI-assisted quantitative trading *research and paper-trading* platform
-**Spec version:** 1.1.4 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
+**Spec version:** 1.1.5 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
 
 **Change log**
 
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.1.5 | §21.3 made precise while implementing the sandbox: the child runs the **engine** as well as the strategy — a `bar_loop` strategy is handed live engine state on every bar, so the two cannot be split across processes — and the engine's name therefore travels in the request, since the sandbox layer may not import an adapter (INV-8). The name is constrained to `quantlab.adapters.engine.*` and re-checked at the point of use. §19's "child never imports `quantlab.adapters`" is amended accordingly: no adapter *other than the named engine*. See ADR `docs/DECISIONS/0004`. |
 | 1.1.4 | §9.2 made precise while implementing the AST checker: every rule now has a stable machine-readable **violation code**, the checker reports *all* violations at once rather than the first, and the hand-rolled-stop rule of §9.1 is stated as a rejection (`E_INTRABAR_STOP`) with its false-positive boundary defined — only a `high`/`low` comparison that also mentions an entry price is refused. |
 | 1.1.3 | Addition found while implementing the engine: new §8.7 **Ruin**. Equity reaching zero now liquidates the account and stops trading, instead of continuing to trade a negative balance. |
 | 1.1.2 | Correction found while implementing the engine: `G_SANITY` (§14.3) compared the *realised* `position_frac` against `max_position_fraction + 1e-9`, which no correct run can satisfy — a position sized at the deciding bar's close is marked one bar later, after the market has moved. The gate now allows a documented drift allowance, and the exact no-drift invariant moved to where it holds. |
@@ -1907,7 +1908,7 @@ QuantLabError
 | `tests/unit/test_engine_edge_cases.py` | ruin (§8.7); degenerate frames; lot step larger than the position; extreme equities and prices; a 100 % fee; log bound |
 | `tests/unit/test_engine_lookahead.py` | INV-3 for the engine: window width, truncation probe, reversed tail, costs and sizing reading only past bars |
 | `tests/unit/test_ast_check.py` | 20 malicious/invalid snippets rejected with correct violation codes; 5 valid pass |
-| `tests/unit/test_sandbox.py` | timeout; memory limit; forbidden import at runtime; socket blocked; result round-trip; child never imports `quantlab.adapters` |
+| `tests/unit/test_sandbox.py` | timeout; CPU limit; memory limit; forbidden import at runtime; socket blocked; result round-trip identical to an in-process run; the child imports no adapter other than the engine named in the request, which must live under `quantlab.adapters.engine` (amended in 1.1.5, ADR 0004); `engine_module`/`engine_class` validation on construction, on parse and at the point of use; guard-ordering invariant |
 | `tests/unit/test_loader.py` | code hash; immutable copy; lineage; tamper detection |
 | `tests/unit/test_store.py` | CRUD; immutability rules; migration from empty; transactions |
 | `tests/unit/test_runner.py` | cache hit (engine spy not called); `force`; failed → re-run |
@@ -1977,6 +1978,41 @@ Integration tests MUST be runnable offline (`MockLLMProvider`, recorded streams,
 1. **Secrets** (`ports/secrets.py`): `Secrets.get(name) -> str` resolves in order: macOS Keychain (`keyring`, service `quantlab`, username = name) → `.env` in repo root (git-ignored) → `ConfigError("missing secret <name>; run quantlab doctor")`. Secrets are read in `container.py` only and passed to adapters as constructor args; never as CLI flags, never in config files, never logged, never in artifacts. Names: `GLM_API_KEY`, optional `BINANCE_API_KEY`/`BINANCE_API_SECRET` (read-only).
 2. **No trade permissions:** `quantlab doctor` and the paper runtime query Binance API restrictions when a key exists and refuse to proceed if trading is enabled. Documented in `SECURITY.md`.
 3. **Sandbox** (`sandbox/runner.py`): child process via `subprocess.run([sys.executable, "-I", "-m", "quantlab.sandbox.child_main", …])` with: `resource.setrlimit` for CPU (`RLIMIT_CPU`), address space (`RLIMIT_AS`) and `RLIMIT_NPROC=0`(where supported); wall-clock timeout with kill; env scrubbed to `PATH` + `PYTHONHASHSEED=0`; cwd = fresh temp dir; inputs via a Parquet + JSON file, outputs via Parquet/JSON (never pickle); `child_main` installs an import hook that raises on any module outside `allowed_imports` + the stdlib subset, and replaces `socket.socket` with a raiser before loading the strategy. On macOS, if `sandbox-exec` is available, wrap with a deny-network profile (best effort; the import hook is the primary control).
+
+   **Engine resolution** (added in 1.1.5; ADR `docs/DECISIONS/0004`). The child runs
+   the *engine* as well as the strategy: a `bar_loop` strategy receives live engine
+   state (`ctx.position`, `ctx.equity`) on every bar, so the two cannot be split
+   across processes without an IPC round trip per bar. The sandbox layer may not
+   import an adapter (INV-8), so the engine's name travels in `SandboxRequest` as
+   `engine_module` / `engine_class`, supplied by the caller. This makes the name the
+   most valuable thing for an attacker to control, and it MUST be constrained:
+
+   - `engine_module` MUST start with `quantlab.adapters.engine.` — the prefix checked
+     *with* its trailing dot, so `…engineering` cannot pass as `…engine` — and every
+     remaining segment MUST be a public identifier;
+   - `engine_class` MUST be a single public identifier;
+   - both MUST be re-validated in the child at the point of use, so a request built
+     by a route that skips validation still cannot redirect the import;
+   - the resolved object MUST be a class, and the instance MUST satisfy the engine
+     contract structurally (a callable `run`, a string `name`); `quantlab.ports` is
+     off-limits to this layer, so the check is by shape, not by `isinstance`.
+
+   The engine MUST be resolved **before** the guards are installed — it is trusted
+   infrastructure, and the guards restrict the strategy — and the strategy MUST be
+   loaded **after** them. The ordering is: read request → resolve engine → AST check
+   → `block_network()` → `install_import_guard()` → execute strategy.
+
+   **Import-guard scope.** The guard enforces `allowed_imports` for imports whose
+   *caller* is the strategy's own module, identified by `__name__` in the calling
+   frame's globals. A blanket rule breaks the libraries the strategy is permitted to
+   use (pydantic reaching for `pydantic_core` mid-validation is not an escape
+   attempt), and a sandbox that must be switched off to get work done protects
+   nothing. A strategy cannot forge its way out: `__import__`, `exec`, `eval` and
+   `globals` are rejected by §9.2 and removed from the namespace it executes in, and
+   a function it defines carries its own module globals wherever it is called from.
+   `FORBIDDEN_MODULES` (§9.2) is a floor under `allowed_imports` at run time as well
+   as at parse time: the allow-list widens what is permitted, never re-opens what is
+   banned.
 4. **Untrusted text**: LLM output is only ever parsed by pydantic; strategy filenames are derived from hashes; prompts embed LLM text only inside clearly delimited blocks.
 5. **Supply chain**: `uv.lock` committed; `pip-audit` in CI; no dependency added without ADR.
 6. **Data integrity**: manifest hash verified before every load; mismatch ⇒ `ManifestMismatchError`.
@@ -2009,7 +2045,8 @@ authoritative map; the phase sections that follow carry the detail.
 | T15 | AMENDED — **done** | `strategies/TEMPLATE.py`, four baselines with explicit `RiskSpec()`, `scripts/make_fixtures.py`, the real 1 416-bar 2023-01/02 Parquet fixture (checksum-verified from the Binance archive) and five golden cases including one that exercises the §8.6 risk exits |
 | T16 | **done** | `tests/synthetic/` — no edge in noise, trend and reversion behave as expected |
 | T17 | AMENDED — **done** | `sandbox/ast_check.py`; 29 rejected and 5 accepted fixtures, the accepted set including compiler output and a breakout that legitimately reads the bar's high; every violation code exercised |
-| T18–T19 | unchanged | — |
+| T18 | AMENDED — **done** | `sandbox/{protocol,guards,runner,child_main}.py`; the child runs the engine, named in the request and constrained to `quantlab.adapters.engine.*` (ADR 0004) |
+| T19 | unchanged | — |
 | T20 | AMENDED | loader handles `kind='genome'`, storing `genome_json` alongside the compiled source |
 | T21 | AMENDED | migration `0002` adds the five evolution tables; store port gains the evolution methods |
 | T22–T23 | unchanged | — |
@@ -2075,7 +2112,7 @@ AC: `test_splits.py` + property test; printing the policy shows bar counts per s
 ### Phase D — Sandbox & leakage
 
 **T17 🔒 AST checker.** `sandbox/ast_check.py` + malicious fixtures. AC: `test_ast_check.py` 20/20 rejected, 5/5 accepted, violation codes listed. — **done**: 29/29 rejected (each asserted against its *exact* code set), 5/5 accepted, plus the shipped template and four baselines; codes tabulated in §9.2.
-**T18 🔒 Sandbox runner.** `sandbox/runner.py`, `child_main.py`. AC: `test_sandbox.py` (timeout, memory, socket, import hook, round-trip); `test_architecture.py` still green.
+**T18 🔒 Sandbox runner.** `sandbox/runner.py`, `child_main.py`. AC: `test_sandbox.py` (timeout, memory, socket, import hook, round-trip); `test_architecture.py` still green. — **done**: also `sandbox/protocol.py` (the Parquet/JSON wire format) and `sandbox/guards.py` (import guard, network block); the sandboxed result is equal bar for bar to an in-process run; engine resolution constrained per §21.3 and ADR 0004.
 **T19 🔒 Leakage probe.** `core/validation/leakage.py` + leaky/honest fixtures. AC: `tests/leakage/` all detected / all pass; vectorized strategies auto-probed at load.
 **T20 Loader.** `strategies_io/loader.py`. AC: `test_loader.py`; tampering a stored file is detected.
 
