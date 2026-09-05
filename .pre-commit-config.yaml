@@ -18,15 +18,23 @@ repos:
     hooks:
       - id: gitleaks
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
-    hooks:
-      - id: ruff-format
-      - id: ruff
-        args: ["--fix", "--exit-non-zero-on-fix"]
-
+  # ruff and mypy run from the project's own environment rather than a pinned
+  # mirror, so `make check` and the hooks can never disagree about which rules
+  # apply or which version enforces them.
   - repo: local
     hooks:
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff
+        name: ruff
+        entry: uv run ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types_or: [python, pyi]
+
       - id: mypy
         name: mypy
         entry: uv run mypy

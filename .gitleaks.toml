@@ -1,0 +1,38 @@
+# gitleaks configuration for QuantLab (INV-2).
+#
+# The stock ruleset does not reliably flag the credential shapes this project
+# actually uses (for example `GLM_API_KEY=<hex>`), so the rules below mirror the
+# regexes in `tests/unit/test_no_secrets.py`.  The two enforcements are meant to
+# agree: the hook stops a commit, the test stops a build.
+
+title = "QuantLab"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "quantlab-named-secret"
+description = "A QuantLab secret name assigned a long opaque value"
+regex = '''(?i)(GLM_API_KEY|BINANCE_API_KEY|BINANCE_API_SECRET)\s*[:=]\s*["']?([A-Za-z0-9+/_\-]{16,})'''
+tags = ["quantlab", "secret"]
+entropy = 2.5
+
+[[rules]]
+id = "quantlab-generic-credential-assignment"
+description = "A credential-shaped name assigned a long opaque value"
+regex = '''(?i)(api[_-]?key|apikey|secret|token|password|passwd|authorization|bearer)\s*[:=]\s*["']?([A-Za-z0-9+/_\-]{20,})'''
+tags = ["quantlab", "secret"]
+entropy = 2.5
+
+[[rules]]
+id = "quantlab-provider-credential"
+description = "A provider-style credential such as sk-… or token_…"
+regex = '''(?i)\b(sk|key|token)[-_][a-z0-9]{20,}\b'''
+tags = ["quantlab", "secret"]
+
+[allowlist]
+description = "Files that describe the rules themselves"
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''tests/unit/test_no_secrets\.py$''',
+]

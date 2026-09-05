@@ -100,6 +100,16 @@ Full prompts and responses are never logged; only their hashes and token counts.
 `strategies/generated/*` (except `.gitkeep`). Pre-commit runs `gitleaks`, `ruff`
 and `mypy`.
 
+`gitleaks` is configured by `.gitleaks.toml`, which extends the stock ruleset
+with rules matching the credential shapes this project actually uses — the
+default rules alone do not reliably flag `GLM_API_KEY=<hex>`. Those rules mirror
+the regexes in `tests/unit/test_no_secrets.py` on purpose: the hook stops a
+commit, the test stops a build, and the two agree on what counts as a secret.
+
+`ruff` and `mypy` run as `local` hooks out of the project environment rather
+than from pinned mirrors, so `make check` and the hooks can never disagree about
+which version enforces which rules.
+
 ## Reporting a problem
 
 This is a private research repository. Report anything that looks like a way to

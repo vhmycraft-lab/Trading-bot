@@ -133,8 +133,9 @@ security add-generic-password -s quantlab -a GLM_API_KEY -w
 cp .env.example .env
 ```
 
-See `docs/SECURITY.md`. `gitleaks` runs in pre-commit and
-`tests/unit/test_no_secrets.py` scans the tree on every `make check` (INV-2).
+See `docs/SECURITY.md`. `gitleaks` (configured by `.gitleaks.toml`) runs in
+pre-commit and `tests/unit/test_no_secrets.py` scans the tree on every
+`make check` (INV-2).
 
 ---
 
