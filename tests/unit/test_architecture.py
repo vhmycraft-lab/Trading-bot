@@ -58,6 +58,12 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     "quantlab.strategies_io": frozenset(
         {"quantlab.core", "quantlab.ports", "quantlab.sandbox", "quantlab.strategies_io"}
     ),
+    # Evolution turns a genome into a registered strategy version, which is
+    # `strategies_io`'s job; the edge runs one way only, exactly as
+    # `walkforward -> optimize` does.
+    "quantlab.evolution": frozenset(
+        {"quantlab.core", "quantlab.ports", "quantlab.evolution", "quantlab.strategies_io"}
+    ),
 }
 
 #: Only these modules may import ``quantlab.adapters`` (spec section 2.3).

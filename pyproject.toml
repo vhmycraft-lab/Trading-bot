@@ -47,7 +47,10 @@ src = ["src", "tests"]
 # `tests/fixtures/strategies/rejected/` holds deliberately unsafe strategy source:
 # it is test *input* for the AST checker, never imported, and every file breaks a
 # rule on purpose. Linting it would report the defects the fixtures exist to carry.
-extend-exclude = ["*.md", "tests/fixtures/strategies/rejected"]
+# `rejected` holds sources whose defects the AST checker exists to detect, and
+# `generated` holds compiled genomes stored under the hash of their own bytes:
+# formatting either one in place would rewrite the very thing under test.
+extend-exclude = ["*.md", "tests/fixtures/strategies/rejected", "strategies/generated"]
 
 [tool.ruff.lint]
 select = [
