@@ -34,7 +34,8 @@ backtest:
 splits:
   policy_file: configs/splits/btcusdt_1h.yaml
 
-optimize:
+optimize:                         # parameter refinement of a promoted candidate (spec 13.8)
+  engine: evolution               # evolution | optuna  -- which search produces candidates
   sampler: tpe                    # tpe | random | grid
   n_trials: 200
   timeout_s: 1800
@@ -47,12 +48,121 @@ optimize:
     perturbation_pcts: [0.10, 0.25]
     n_neighbors: 12
 
+# ---------------------------------------------------------------------------
+# Evolutionary optimisation (spec section 13).
+#
+# SCHEMA ONLY at this point: these keys are parsed and validated, and nothing
+# reads them yet. The optimiser itself lands in phase F' (T45-T54). They are
+# declared now so that the shipped configuration matches specification v1.1 and
+# so that a value that could not work is rejected before any code depends on it.
+# ---------------------------------------------------------------------------
+evolution:
+  enabled: true
+  population_size: 16
+  n_survivors: 12                 # elite carried into the next generation unchanged
+  n_offspring: 3                  # children produced from survivors by mutation
+  n_immigrants: 1                 # novel candidates, unrelated to any survivor
+  # INVARIANT: n_survivors + n_offspring + n_immigrants == population_size
+  max_generations: 30
+  seed: 42
+  max_wall_clock_s: 21600
+  max_evaluations: 1000           # counted into the deflated Sharpe's M (spec 14.4)
+  stop_on_no_improvement_generations: 8
+  min_improvement: 0.005          # fitness delta that counts as an improvement
+
+  mutation:
+    parameter_rate: 0.7           # P(child receives at least one parameter mutation)
+    structural_rate: 0.3          # P(child receives at least one structural mutation)
+    max_mutations_per_child: 3
+    max_repair_attempts: 3        # invalid child -> redraw; then fall back to an immigrant
+    parameter:
+      perturb_pct: 0.25           # x *= 1 +/- U(0, perturb_pct)
+      jump_probability: 0.15      # otherwise resample uniformly from the ParamSpec range
+      risk_perturb_pct: 0.35      # stop-loss / take-profit / trailing / sizing move further
+    structural:                   # relative weights, normalised at load;
+      add_confirmation: 0.22      # one key per operator in the spec 13.4 table
+      remove_confirmation: 0.18
+      modify_entry: 0.18
+      modify_exit: 0.13
+      add_filter: 0.09
+      remove_filter: 0.09
+      replace_indicator: 0.07
+      change_tree_mode: 0.04
+
+  diversity:
+    max_pairwise_similarity: 0.90 # a survivor too similar to a fitter one is skipped
+    min_population_diversity: 0.35
+    structural_weight: 0.4        # behaviour is weighted higher than structure on purpose:
+    behavioural_weight: 0.6       # two strategies that trade alike are one strategy
+    immigrant_boost: 2            # extra immigrants while diversity is below the floor
+    max_immigrants: 4             # INVARIANT: <= n_offspring + n_immigrants, because a
+                                  # boost displaces offspring and never a survivor
+
+  fitness:                        # spec 13.3; weights MUST sum to 1.0
+    weights:
+      expectancy: 0.20
+      profit_factor: 0.12
+      risk_adjusted: 0.15
+      drawdown: 0.15
+      consistency: 0.12
+      inner_oos: 0.12
+      trades: 0.06
+      win_rate: 0.04              # deliberately tiny, and behind a hard expectancy gate
+      net_return: 0.02            # deliberately tiny: profit is not the objective
+      concentration: 0.02
+    targets:
+      expectancy_pct: 0.002
+      profit_factor: 1.5
+      sortino: 1.5
+      cagr: 0.20
+      trades: 200
+      win_rate: 0.55
+      win_rate_floor: 0.35
+      drawdown_ceiling: 0.35
+      consistency_period_bars: 720
+    gates:                        # failing any gate sets fitness to FITNESS_REJECTED
+      min_expectancy_pct: 0.0
+      min_trades: 30
+      max_drawdown: 0.50
+      min_retention_top1: 0.0     # must still be profitable without its single best trade
+    penalties:
+      drawdown_soft: 0.20
+      trades_soft: 100
+      instability_max_cv: 0.60
+      sensitivity_max_drop: 0.50
+      divergence_min_ratio: 0.50
+      complexity_free_params: 6
+      complexity_logic_lines: 150
+      removal_k: [1, 3, 5]        # spec 14.4 trade-removal test
+      removal_floor: [0.40, 0.20, 0.10]
+      removal_target: [0.80, 0.65, 0.55]
+
+  inner_walkforward:              # out-of-sample *inside train*; never touches validation
+    n_folds: 4
+    scheme: rolling               # rolling | anchored
+    embargo_bars: 24
+
+  promotion:                      # the only route from evolution to the validation segment
+    every_generations: 0          # 0 = only after the final generation
+    n_promote: 3
+    min_fitness: 0.35
+    max_similarity_between_promoted: 0.80
+    counts_as_validation_touch: true
+
+  genome:                         # structural limits (spec 9.6)
+    max_conditions_entry: 4
+    max_conditions_exit: 4
+    max_filters: 3
+    max_indicators: 6
+    max_free_params: 6
+
 walkforward:
   scheme: rolling                 # rolling | anchored
   is_bars: 13140                  # 18 months of 1h
   oos_bars: 2190                  # 3 months
   step_bars: 2190
   reoptimize_each_window: true
+  evolution_generations: 8        # generations per IS window when optimize.engine == evolution
 
 validation:
   min_trades_val: 30
@@ -96,8 +206,9 @@ llm:
   daily_cost_cap_eur: 10.0
   pricing_file: configs/llm_pricing.yaml
 
-research:
-  max_iterations: 25
+research:                         # LLM contribution to evolution (spec 12)
+  max_seed_genomes: 8             # LLM-proposed genomes used to fill generation 0
+  guided_mutation_share: 0.25     # share of offspring whose operator the LLM may suggest
   max_cost_eur: 20.0
   max_wall_clock_s: 14400
   max_repair_attempts: 2

@@ -1,13 +1,14 @@
 # CLAUDE_CODE_MASTER_SPEC.md
 
 **Project:** QuantLab — AI-assisted quantitative trading *research and paper-trading* platform
-**Spec version:** 1.1 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
+**Spec version:** 1.1.1 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
 
 **Change log**
 
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.1.1 | Corrections to 1.1, found while implementing the config schema: `mutation.structural` now carries one weight per operator in the §13.4 table (`replace_indicator` and `change_tree_mode` were missing); `diversity.max_immigrants` default lowered 6 → 4 and constrained to `n_offspring + n_immigrants`, since an immigrant boost displaces offspring and never a survivor. |
 | 1.1 | §13 replaced: the sequential *propose → backtest → modify* research loop is superseded by an **evolutionary optimiser** over a population of strategy candidates. Adds the strategy **genome** and first-class risk controls (§8.4, §9), multi-objective **fitness** (§13.3), **mutation** operators (§13.4), **diversity** management (§13.5), **lineage** persistence (§6), the **trade-removal** robustness test (§14.4), and invariants INV-9…INV-11. The LLM's role changes from sequential author to genome proposer (§12). See ADR `docs/DECISIONS/0003`. |
 **Audience:** Claude Code. Every instruction below is addressed to you, the implementing agent.
 
@@ -421,13 +422,15 @@ evolution:                        # the primary search (§13)
       perturb_pct: 0.25           # x *= 1 +/- U(0, perturb_pct)
       jump_probability: 0.15      # otherwise resample uniformly from the ParamSpec range
       risk_perturb_pct: 0.35      # stop-loss / take-profit / trailing / sizing move further
-    structural:                   # relative weights, normalised at load
-      add_confirmation: 0.25
-      remove_confirmation: 0.20
-      modify_entry: 0.20
-      modify_exit: 0.15
-      add_filter: 0.10
-      remove_filter: 0.10
+    structural:                   # relative weights, normalised at load;
+      add_confirmation: 0.22      # one key per operator in the §13.4 table
+      remove_confirmation: 0.18
+      modify_entry: 0.18
+      modify_exit: 0.13
+      add_filter: 0.09
+      remove_filter: 0.09
+      replace_indicator: 0.07
+      change_tree_mode: 0.04
 
   diversity:
     max_pairwise_similarity: 0.90 # a survivor too similar to a fitter one is skipped
@@ -435,7 +438,8 @@ evolution:                        # the primary search (§13)
     structural_weight: 0.4
     behavioural_weight: 0.6
     immigrant_boost: 2            # extra immigrants while diversity is below the floor
-    max_immigrants: 6
+    max_immigrants: 4             # INVARIANT: <= n_offspring + n_immigrants, because a
+                                  # boost displaces offspring and never a survivor
 
   fitness:                        # §13.3; weights MUST sum to 1.0
     weights:
@@ -1532,6 +1536,8 @@ similarity(a, b) = structural_weight · jaccard(signature(a), signature(b))
 2. *Diversity floor* — `generation.diversity = 1 − mean pairwise similarity`. While
    it is below `min_population_diversity`, the immigrant count rises by
    `immigrant_boost` (capped at `max_immigrants`) and offspring fall to match.
+   Survivors are never displaced, so `max_immigrants` MUST NOT exceed
+   `n_offspring + n_immigrants`; a configuration that does is a `ConfigError`.
 3. *Reserved novelty* — `n_immigrants ≥ 1` always, so every generation contains at
    least one candidate that owes nothing to the current leader.
 
@@ -1937,7 +1943,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T01 | unchanged | — |
 | T02 | unchanged | — |
 | T03 | AMENDED | `test_architecture.py` also enforces INV-9/10/11 boundaries once phase F′ lands |
-| T04 | AMENDED | `configs/default.yaml` + `core/config.py` gain the `evolution:` section and `optimize.engine`; weights must sum to 1; `n_survivors + n_offspring + n_immigrants == population_size` |
+| T04 | AMENDED — **done** | `configs/default.yaml` + `core/config.py` carry the `evolution:` section, `optimize.engine`, `walkforward.evolution_generations` and the reshaped `research:` section. Weights sum to 1; `n_survivors + n_offspring + n_immigrants == population_size`; `diversity.max_immigrants <= n_offspring + n_immigrants`. Schema only — no optimiser behaviour. |
 | T05 | AMENDED | `core/types.py` gains `RiskSpec`, `SizingSpec`; `Fill` records which risk control fired |
 | T06–T09 | unchanged | — |
 | T10 | unchanged | — |

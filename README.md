@@ -19,7 +19,7 @@ Phases 1 (foundation) and 2 (historical market data) are complete.
 
 | Area | Module | State |
 |---|---|---|
-| Configuration | `quantlab.core.config` | complete (all keys of spec §5) |
+| Configuration | `quantlab.core.config` | complete (all keys of spec §5, including the `evolution:` schema) |
 | Errors | `quantlab.core.errors` | complete (spec §18.1) |
 | Hashing / canonical JSON | `quantlab.core.hashing` | complete (spec §1.3) |
 | Logging + redaction | `quantlab.core.logging` | complete (spec §17) |
@@ -51,6 +51,10 @@ Every candidate evaluation counts as a trial against the deflated Sharpe ratio,
 so a wider search must clear a higher significance bar. Full lineage — parent,
 generation, and every mutation with the seed that drew it — is persisted and
 replayable.
+
+The `evolution:` configuration block is already present and validated
+(`quantlab config show`), so a setting that could not work is rejected today
+rather than during phase F′. Nothing reads those values yet.
 
 ---
 

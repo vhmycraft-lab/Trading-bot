@@ -16,13 +16,21 @@ Secrets are never read from here; see :mod:`quantlab.ports.secrets`.
 
 from __future__ import annotations
 
+import itertools
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from quantlab.core.errors import ConfigError
@@ -32,19 +40,33 @@ __all__ = [
     "DEFAULT_CONFIG_PATH",
     "ENV_PREFIX",
     "FORBIDDEN_OBJECTIVES",
+    "REMOVED_KEYS",
     "VALID_OBJECTIVES",
     "AppConfig",
     "BacktestSettings",
+    "DiversitySettings",
+    "EvolutionSettings",
+    "FitnessGates",
+    "FitnessPenalties",
+    "FitnessSettings",
+    "FitnessTargets",
+    "FitnessWeights",
+    "GenomeSettings",
+    "InnerWalkForwardSettings",
     "LLMSettings",
     "LockboxSettings",
     "LoggingSettings",
     "MarketSettings",
+    "MutationParameterSettings",
+    "MutationSettings",
+    "MutationStructuralSettings",
     "OptimizeSettings",
     "PaperSettings",
     "PboSettings",
     "PermutationSettings",
     "PlateauSettings",
     "ProjectSettings",
+    "PromotionSettings",
     "ResearchSettings",
     "SandboxSettings",
     "ScoreSettings",
@@ -53,16 +75,30 @@ __all__ = [
     "ValidationSettings",
     "WalkForwardSettings",
     "apply_overrides",
+    "check_removed_keys",
     "deep_merge",
     "load_config",
     "parse_override",
 ]
 
 DEFAULT_CONFIG_PATH: Final[Path] = Path("configs/default.yaml")
+
+#: Keys removed by a specification change, with the migration to follow.
+#: ``extra="forbid"`` would otherwise reject them with a generic "extra inputs
+#: are not permitted", which tells a reader nothing about what to do instead.
+REMOVED_KEYS: Final[Mapping[str, str]] = {
+    "research.max_iterations": (
+        "removed in spec 1.1: the sequential research loop is superseded by the "
+        "evolutionary optimiser. Use evolution.max_generations."
+    ),
+}
 ENV_PREFIX: Final[str] = "QUANTLAB__"
 
 #: Objectives that may be optimised (spec section 13.1).
 VALID_OBJECTIVES: Final[tuple[str, ...]] = ("sortino_dd", "sharpe", "calmar", "expectancy")
+
+#: Slack allowed when checking that a set of weights sums to 1.0.
+_WEIGHT_TOLERANCE: Final[float] = 1e-9
 
 #: Return-only objectives.  Optimising these invites curve fitting, so they are banned.
 FORBIDDEN_OBJECTIVES: Final[tuple[str, ...]] = (
@@ -140,6 +176,9 @@ class PlateauSettings(_Section):
 
 
 class OptimizeSettings(_Section):
+    #: Which search produces candidates.  ``evolution`` is the primary search
+    #: (spec section 13); ``optuna`` refines a promoted candidate (spec 13.8).
+    engine: Literal["evolution", "optuna"] = "evolution"
     sampler: Literal["tpe", "random", "grid"] = "tpe"
     n_trials: int = Field(default=200, ge=1)
     timeout_s: int = Field(default=1800, ge=1)
@@ -173,6 +212,8 @@ class WalkForwardSettings(_Section):
     oos_bars: int = Field(default=2_190, ge=1)
     step_bars: int = Field(default=2_190, ge=1)
     reoptimize_each_window: bool = True
+    #: Generations per in-sample window when ``optimize.engine == "evolution"``.
+    evolution_generations: int = Field(default=8, ge=1)
 
 
 class PermutationSettings(_Section):
@@ -237,11 +278,396 @@ class LLMSettings(_Section):
 
 
 class ResearchSettings(_Section):
-    max_iterations: int = Field(default=25, ge=1)
+    """What the LLM contributes to the evolutionary search (spec section 12)."""
+
+    #: LLM-proposed genomes used to fill generation 0.
+    max_seed_genomes: int = Field(default=8, ge=0)
+    #: Share of offspring whose mutation operator the LLM may suggest.
+    guided_mutation_share: float = Field(default=0.25, ge=0, le=1)
     max_cost_eur: float = Field(default=20.0, ge=0)
     max_wall_clock_s: int = Field(default=14_400, ge=1)
     max_repair_attempts: int = Field(default=2, ge=0)
     smoke_bars: int = Field(default=200, ge=1)
+
+
+# ---------------------------------------------------------------------------
+# evolutionary optimisation (spec section 13)
+#
+# Schema only.  Nothing reads these values yet; the optimiser lands in phase F'
+# (T45-T54).  They are declared now so the shipped configuration matches
+# specification v1.1, and — more usefully — so that a configuration that could
+# not possibly work is rejected before any code depends on it.  Every validator
+# below encodes a rule from the specification, not a preference.
+# ---------------------------------------------------------------------------
+class MutationParameterSettings(_Section):
+    """How a numeric parameter moves under mutation (spec section 13.4)."""
+
+    perturb_pct: float = Field(default=0.25, gt=0, le=1)
+    jump_probability: float = Field(default=0.15, ge=0, le=1)
+    #: Risk parameters move further than ordinary ones; they are coarser controls.
+    risk_perturb_pct: float = Field(default=0.35, gt=0, le=1)
+
+
+class MutationStructuralSettings(_Section):
+    """Relative weights of the structural operators of spec section 13.4.
+
+    One field per operator in that table.  The weights are relative and are
+    normalised by :meth:`normalised`, so they need not sum to anything in
+    particular — but they must not all be zero, which would leave the structural
+    mutation path unable to choose an operator at all.
+    """
+
+    add_confirmation: float = Field(default=0.22, ge=0)
+    remove_confirmation: float = Field(default=0.18, ge=0)
+    modify_entry: float = Field(default=0.18, ge=0)
+    modify_exit: float = Field(default=0.13, ge=0)
+    add_filter: float = Field(default=0.09, ge=0)
+    remove_filter: float = Field(default=0.09, ge=0)
+    replace_indicator: float = Field(default=0.07, ge=0)
+    change_tree_mode: float = Field(default=0.04, ge=0)
+
+    @model_validator(mode="after")
+    def _some_operator_is_reachable(self) -> MutationStructuralSettings:
+        if self.total <= 0:
+            raise ConfigError(
+                "at least one structural mutation operator must have a positive weight",
+                operators=sorted(type(self).model_fields),
+            )
+        return self
+
+    @property
+    def total(self) -> float:
+        """Sum of the raw weights."""
+        return float(sum(getattr(self, name) for name in type(self).model_fields))
+
+    def normalised(self) -> dict[str, float]:
+        """Return the operator weights as a probability distribution."""
+        total = self.total
+        return {name: getattr(self, name) / total for name in type(self).model_fields}
+
+
+class MutationSettings(_Section):
+    parameter_rate: float = Field(default=0.7, ge=0, le=1)
+    structural_rate: float = Field(default=0.3, ge=0, le=1)
+    max_mutations_per_child: int = Field(default=3, ge=1)
+    max_repair_attempts: int = Field(default=3, ge=0)
+    parameter: MutationParameterSettings = MutationParameterSettings()
+    structural: MutationStructuralSettings = MutationStructuralSettings()
+
+    @model_validator(mode="after")
+    def _a_child_can_be_mutated(self) -> MutationSettings:
+        if self.parameter_rate <= 0 and self.structural_rate <= 0:
+            raise ConfigError(
+                "parameter_rate and structural_rate are both zero, so no child could "
+                "ever differ from its parent"
+            )
+        return self
+
+
+class DiversitySettings(_Section):
+    """Keeping the population from collapsing onto one strategy (spec section 13.5)."""
+
+    max_pairwise_similarity: float = Field(default=0.90, gt=0, le=1)
+    min_population_diversity: float = Field(default=0.35, ge=0, lt=1)
+    structural_weight: float = Field(default=0.4, ge=0, le=1)
+    behavioural_weight: float = Field(default=0.6, ge=0, le=1)
+    immigrant_boost: int = Field(default=2, ge=0)
+    max_immigrants: int = Field(default=4, ge=1)
+
+    @model_validator(mode="after")
+    def _similarity_weights_sum_to_one(self) -> DiversitySettings:
+        total = self.structural_weight + self.behavioural_weight
+        if abs(total - 1.0) > _WEIGHT_TOLERANCE:
+            raise ConfigError(
+                "structural_weight + behavioural_weight must sum to 1.0",
+                structural_weight=self.structural_weight,
+                behavioural_weight=self.behavioural_weight,
+                total=total,
+            )
+        return self
+
+
+class FitnessWeights(_Section):
+    """Weights of the ten fitness components (spec section 13.3).
+
+    ``net_return`` and ``win_rate`` are deliberately the smallest: profit is not
+    the objective, and win rate is nearly meaningless on its own.  Neither can
+    rescue a candidate anyway — expectancy and drawdown are hard gates that run
+    before this score exists.
+    """
+
+    expectancy: float = Field(default=0.20, ge=0, le=1)
+    profit_factor: float = Field(default=0.12, ge=0, le=1)
+    risk_adjusted: float = Field(default=0.15, ge=0, le=1)
+    drawdown: float = Field(default=0.15, ge=0, le=1)
+    consistency: float = Field(default=0.12, ge=0, le=1)
+    inner_oos: float = Field(default=0.12, ge=0, le=1)
+    trades: float = Field(default=0.06, ge=0, le=1)
+    win_rate: float = Field(default=0.04, ge=0, le=1)
+    net_return: float = Field(default=0.02, ge=0, le=1)
+    concentration: float = Field(default=0.02, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self) -> FitnessWeights:
+        if abs(self.total - 1.0) > _WEIGHT_TOLERANCE:
+            raise ConfigError(
+                "fitness weights must sum to 1.0 so that scores stay comparable "
+                "across configurations",
+                total=self.total,
+                weights=self.as_dict(),
+            )
+        return self
+
+    @property
+    def total(self) -> float:
+        return float(sum(getattr(self, name) for name in type(self).model_fields))
+
+    def as_dict(self) -> dict[str, float]:
+        return {name: getattr(self, name) for name in type(self).model_fields}
+
+
+class FitnessTargets(_Section):
+    """Values at which a fitness component reaches 1.0 (spec section 13.3).
+
+    Several of these appear in denominators, so the bounds here are what keeps
+    the fitness function total rather than merely usually-defined.
+    """
+
+    expectancy_pct: float = Field(default=0.002, gt=0)
+    #: Must exceed 1: the component is ``(profit_factor - 1) / (target - 1)``.
+    profit_factor: float = Field(default=1.5, gt=1)
+    sortino: float = Field(default=1.5, gt=0)
+    cagr: float = Field(default=0.20, gt=0)
+    trades: int = Field(default=200, ge=1)
+    win_rate: float = Field(default=0.55, gt=0, le=1)
+    win_rate_floor: float = Field(default=0.35, ge=0, lt=1)
+    drawdown_ceiling: float = Field(default=0.35, gt=0, le=1)
+    consistency_period_bars: int = Field(default=720, ge=1)
+
+    @model_validator(mode="after")
+    def _win_rate_range_is_non_degenerate(self) -> FitnessTargets:
+        if self.win_rate <= self.win_rate_floor:
+            raise ConfigError(
+                "targets.win_rate must exceed targets.win_rate_floor; the component "
+                "divides by their difference",
+                win_rate=self.win_rate,
+                win_rate_floor=self.win_rate_floor,
+            )
+        return self
+
+
+class FitnessGates(_Section):
+    """Absolute rejections (spec section 13.3, stage 1).
+
+    These run before the weighted score exists, which is how "win rate must never
+    override negative expectancy or excessive drawdown" is expressed as control
+    flow rather than as a hopeful weighting.
+    """
+
+    min_expectancy_pct: float = Field(default=0.0, ge=0)
+    min_trades: int = Field(default=30, ge=0)
+    max_drawdown: float = Field(default=0.50, gt=0, le=1)
+    #: Retention after removing the single best trade; below this, reject.
+    min_retention_top1: float = Field(default=0.0, le=1)
+
+
+class FitnessPenalties(_Section):
+    """Multiplicative robustness penalties (spec section 13.3, stage 3)."""
+
+    drawdown_soft: float = Field(default=0.20, gt=0, le=1)
+    trades_soft: int = Field(default=100, ge=0)
+    instability_max_cv: float = Field(default=0.60, gt=0)
+    sensitivity_max_drop: float = Field(default=0.50, gt=0, le=1)
+    divergence_min_ratio: float = Field(default=0.50, ge=0, le=1)
+    complexity_free_params: int = Field(default=6, ge=1)
+    complexity_logic_lines: int = Field(default=150, ge=1)
+    #: Trade-removal test (spec section 14.4): remove the top k winners.
+    removal_k: tuple[int, ...] = (1, 3, 5)
+    removal_floor: tuple[float, ...] = (0.40, 0.20, 0.10)
+    removal_target: tuple[float, ...] = (0.80, 0.65, 0.55)
+
+    @model_validator(mode="after")
+    def _removal_curve_is_coherent(self) -> FitnessPenalties:
+        if not self.removal_k:
+            raise ConfigError("penalties.removal_k must not be empty")
+        if not (len(self.removal_k) == len(self.removal_floor) == len(self.removal_target)):
+            raise ConfigError(
+                "penalties.removal_k, removal_floor and removal_target must be the same length",
+                removal_k=list(self.removal_k),
+                removal_floor=list(self.removal_floor),
+                removal_target=list(self.removal_target),
+            )
+        if any(k < 1 for k in self.removal_k):
+            raise ConfigError(
+                "penalties.removal_k values must be >= 1", removal_k=list(self.removal_k)
+            )
+        if any(later <= earlier for earlier, later in itertools.pairwise(self.removal_k)):
+            raise ConfigError(
+                "penalties.removal_k must be strictly increasing", removal_k=list(self.removal_k)
+            )
+        for name, values in (
+            ("removal_floor", self.removal_floor),
+            ("removal_target", self.removal_target),
+        ):
+            if any(not 0.0 <= value <= 1.0 for value in values):
+                raise ConfigError(
+                    f"penalties.{name} values must lie in [0, 1]", values=list(values)
+                )
+            # Retention is non-increasing in k, so its thresholds must be too;
+            # a floor that rose with k could never be satisfied.
+            if any(later > earlier for earlier, later in itertools.pairwise(values)):
+                raise ConfigError(
+                    f"penalties.{name} must be non-increasing in k, because retention "
+                    "after removing more trades can only fall",
+                    values=list(values),
+                )
+        for k, floor, target in zip(
+            self.removal_k, self.removal_floor, self.removal_target, strict=True
+        ):
+            if floor >= target:
+                raise ConfigError(
+                    "penalties.removal_floor must be below removal_target for every k",
+                    k=k,
+                    floor=floor,
+                    target=target,
+                )
+        return self
+
+
+class FitnessSettings(_Section):
+    weights: FitnessWeights = FitnessWeights()
+    targets: FitnessTargets = FitnessTargets()
+    gates: FitnessGates = FitnessGates()
+    penalties: FitnessPenalties = FitnessPenalties()
+
+    @model_validator(mode="after")
+    def _soft_thresholds_sit_inside_the_hard_ones(self) -> FitnessSettings:
+        if self.penalties.drawdown_soft >= self.gates.max_drawdown:
+            raise ConfigError(
+                "penalties.drawdown_soft must be below gates.max_drawdown; the penalty "
+                "ramps between them",
+                drawdown_soft=self.penalties.drawdown_soft,
+                max_drawdown=self.gates.max_drawdown,
+            )
+        if self.penalties.trades_soft < self.gates.min_trades:
+            raise ConfigError(
+                "penalties.trades_soft must be at or above gates.min_trades; below the "
+                "gate a candidate is rejected outright and the penalty is unreachable",
+                trades_soft=self.penalties.trades_soft,
+                min_trades=self.gates.min_trades,
+            )
+        if self.targets.drawdown_ceiling > self.gates.max_drawdown:
+            raise ConfigError(
+                "targets.drawdown_ceiling must not exceed gates.max_drawdown; the "
+                "drawdown component would still be positive for a rejected candidate",
+                drawdown_ceiling=self.targets.drawdown_ceiling,
+                max_drawdown=self.gates.max_drawdown,
+            )
+        return self
+
+
+class InnerWalkForwardSettings(_Section):
+    """Out-of-sample folds *inside* train (spec section 13.6).
+
+    This is how fitness rewards generalisation without spending the validation
+    segment once per candidate per generation.
+    """
+
+    n_folds: int = Field(default=4, ge=2)
+    scheme: Literal["rolling", "anchored"] = "rolling"
+    embargo_bars: int = Field(default=24, ge=0)
+
+
+class PromotionSettings(_Section):
+    """The only route from evolution to the validation segment (spec section 13.7)."""
+
+    #: 0 means "only after the final generation".
+    every_generations: int = Field(default=0, ge=0)
+    n_promote: int = Field(default=3, ge=1)
+    min_fitness: float = Field(default=0.35, ge=0, le=1)
+    max_similarity_between_promoted: float = Field(default=0.80, gt=0, le=1)
+    counts_as_validation_touch: bool = True
+
+
+class GenomeSettings(_Section):
+    """Structural limits on a candidate genome (spec section 9.6)."""
+
+    max_conditions_entry: int = Field(default=4, ge=1)
+    max_conditions_exit: int = Field(default=4, ge=1)
+    max_filters: int = Field(default=3, ge=0)
+    max_indicators: int = Field(default=6, ge=1)
+    max_free_params: int = Field(default=6, ge=1)
+
+
+class EvolutionSettings(_Section):
+    """Population-based search over strategy candidates (spec section 13)."""
+
+    enabled: bool = True
+    population_size: int = Field(default=16, ge=2)
+    n_survivors: int = Field(default=12, ge=1)
+    n_offspring: int = Field(default=3, ge=0)
+    #: At least one, always: spec section 13.5 reserves a slot per generation for a
+    #: candidate that owes nothing to the current leader.  With the sum identity
+    #: below, this also guarantees ``n_survivors < population_size``.
+    n_immigrants: int = Field(default=1, ge=1)
+    max_generations: int = Field(default=30, ge=1)
+    seed: int = 42
+    max_wall_clock_s: int = Field(default=21_600, ge=1)
+    max_evaluations: int = Field(default=1_000, ge=1)
+    stop_on_no_improvement_generations: int = Field(default=8, ge=1)
+    min_improvement: float = Field(default=0.005, ge=0)
+    mutation: MutationSettings = MutationSettings()
+    diversity: DiversitySettings = DiversitySettings()
+    fitness: FitnessSettings = FitnessSettings()
+    inner_walkforward: InnerWalkForwardSettings = InnerWalkForwardSettings()
+    promotion: PromotionSettings = PromotionSettings()
+    genome: GenomeSettings = GenomeSettings()
+
+    @property
+    def open_slots(self) -> int:
+        """Slots per generation not held by a survivor."""
+        return self.n_offspring + self.n_immigrants
+
+    @model_validator(mode="after")
+    def _population_arithmetic(self) -> EvolutionSettings:
+        total = self.n_survivors + self.n_offspring + self.n_immigrants
+        if total != self.population_size:
+            raise ConfigError(
+                "n_survivors + n_offspring + n_immigrants must equal population_size; "
+                "silently resizing the population would make every downstream trial "
+                "count, and therefore every deflated Sharpe ratio, wrong",
+                population_size=self.population_size,
+                n_survivors=self.n_survivors,
+                n_offspring=self.n_offspring,
+                n_immigrants=self.n_immigrants,
+                total=total,
+            )
+        if self.diversity.max_immigrants > self.open_slots:
+            raise ConfigError(
+                "diversity.max_immigrants must not exceed n_offspring + n_immigrants; "
+                "an immigrant boost displaces offspring and never a survivor",
+                max_immigrants=self.diversity.max_immigrants,
+                open_slots=self.open_slots,
+            )
+        if self.diversity.max_immigrants < self.n_immigrants:
+            raise ConfigError(
+                "diversity.max_immigrants must be at least n_immigrants",
+                max_immigrants=self.diversity.max_immigrants,
+                n_immigrants=self.n_immigrants,
+            )
+        if self.max_evaluations < self.population_size:
+            raise ConfigError(
+                "max_evaluations must allow at least one full generation",
+                max_evaluations=self.max_evaluations,
+                population_size=self.population_size,
+            )
+        if self.promotion.n_promote > self.population_size:
+            raise ConfigError(
+                "promotion.n_promote cannot exceed the population size",
+                n_promote=self.promotion.n_promote,
+                population_size=self.population_size,
+            )
+        return self
 
 
 class SandboxSettings(_Section):
@@ -309,6 +735,7 @@ class AppConfig(BaseSettings):
     backtest: BacktestSettings = BacktestSettings()
     splits: SplitsSettings = SplitsSettings()
     optimize: OptimizeSettings = OptimizeSettings()
+    evolution: EvolutionSettings = EvolutionSettings()
     walkforward: WalkForwardSettings = WalkForwardSettings()
     validation: ValidationSettings = ValidationSettings()
     lockbox: LockboxSettings = LockboxSettings()
@@ -394,6 +821,31 @@ def apply_overrides(data: Mapping[str, Any], overrides: Iterable[str]) -> dict[s
     return result
 
 
+def _lookup(data: Mapping[str, Any], dotted: str) -> bool:
+    """True if ``dotted`` names a key present in ``data``."""
+    cursor: Any = data
+    for part in dotted.split("."):
+        if not isinstance(cursor, Mapping) or part not in cursor:
+            return False
+        cursor = cursor[part]
+    return True
+
+
+def check_removed_keys(data: Mapping[str, Any]) -> None:
+    """Raise a migration-shaped error for any key a spec change has retired.
+
+    Raises:
+        ConfigError: naming the key and what replaced it.
+    """
+    found = [key for key in REMOVED_KEYS if _lookup(data, key)]
+    if found:
+        raise ConfigError(
+            "configuration uses a key that no longer exists:\n"
+            + "\n".join(f"  {key}: {REMOVED_KEYS[key]}" for key in sorted(found)),
+            keys=sorted(found),
+        )
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise ConfigError("config file not found", path=str(path))
@@ -436,6 +888,8 @@ def load_config(
         data = deep_merge(data, _read_yaml(Path(extra)))
     if overrides:
         data = apply_overrides(data, overrides)
+
+    check_removed_keys(data)
 
     try:
         return AppConfig(**data)
