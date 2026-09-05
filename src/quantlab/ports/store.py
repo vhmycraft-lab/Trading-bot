@@ -177,7 +177,7 @@ class ExperimentStore(Protocol):
         """
         ...
 
-    def lineage(self, strategy_id: str) -> list[StrategyVersionRecord]:
+    def lineage(self, strategy_id: str) -> Sequence[StrategyVersionRecord]:
         """Every ancestor of ``strategy_id``, oldest first, ending with itself."""
         ...
 
@@ -237,7 +237,7 @@ class ExperimentStore(Protocol):
         """Close a run and write everything it produced, in one transaction."""
         ...
 
-    def query_runs(self, **filters: Any) -> list[RunRecord]:
+    def query_runs(self, **filters: Any) -> Sequence[RunRecord]:
         """Runs matching every supplied filter, oldest first."""
         ...
 
@@ -263,12 +263,51 @@ class ExperimentStore(Protocol):
         """Record a validation verdict, with the thresholds it was decided against."""
         ...
 
-    def record_llm_interaction(self, **fields: Any) -> Any:
+    def record_llm_interaction(
+        self,
+        *,
+        campaign: str,
+        provider: str,
+        model: str,
+        purpose: str,
+        prompt_sha256: str,
+        prompt_path: str,
+        response_path: str,
+        prompt_template_sha256: str,
+        tokens_in: int,
+        tokens_out: int,
+        cost_eur: float,
+        temperature: float,
+        latency_ms: int,
+        status: str,
+        seed: int | None = ...,
+        interaction_id: str | None = ...,
+    ) -> Any:
         """Record that a model was asked something, and what it cost."""
         ...
 
     # -- evolution (spec section 13) ---------------------------------------
-    def create_evolution_run(self, **fields: Any) -> Any:
+    # Spelled out rather than declared as ``**fields``: a protocol that accepts
+    # anything checks nothing, and these are the calls that write the lineage
+    # INV-10 replays and the promotions INV-9 gates on.
+    def create_evolution_run(
+        self,
+        *,
+        evolution_id: str,
+        experiment_id: str,
+        campaign: str,
+        dataset_id: str,
+        split_id: str,
+        population_size: int,
+        n_survivors: int,
+        n_offspring: int,
+        n_immigrants: int,
+        max_generations: int,
+        seed: int,
+        fitness_config_json: str,
+        mutation_config_json: str,
+        diversity_config_json: str,
+    ) -> Any:
         """Open an evolution run, recording the search it is about to perform."""
         ...
 
@@ -278,31 +317,91 @@ class ExperimentStore(Protocol):
         """Close an evolution run and say why it stopped."""
         ...
 
-    def add_generation(self, **fields: Any) -> Any:
+    def count_evaluation(self, evolution_id: str, n: int = ...) -> int:
+        """Add to the run's evaluation count; return the new total (section 14.4's ``M``)."""
+        ...
+
+    def add_generation(
+        self,
+        *,
+        generation_id: str,
+        evolution_id: str,
+        gen_index: int,
+        diversity: float,
+        n_evaluated: int,
+        n_cache_hits: int,
+        n_rejected_by_gate: int,
+        n_immigrants_used: int,
+        stats_json: str = ...,
+        best_fitness: float | None = ...,
+        median_fitness: float | None = ...,
+        mean_fitness: float | None = ...,
+    ) -> Any:
         """Record one completed generation. Append-only."""
         ...
 
-    def add_candidate(self, **fields: Any) -> Any:
+    def add_candidate(
+        self,
+        *,
+        candidate_id: str,
+        evolution_id: str,
+        generation_id: str,
+        gen_index: int,
+        strategy_id: str,
+        params_json: str,
+        kind: str,
+        origin: str,
+        genome_json: str | None = ...,
+        parent_candidate_id: str | None = ...,
+        signature_json: str = ...,
+    ) -> Any:
         """Record a candidate as it enters the population, before evaluation."""
+        ...
+
+    def score_candidate(
+        self,
+        candidate_id: str,
+        *,
+        run_id: str | None = ...,
+        fitness: float | None = ...,
+        base_score: float | None = ...,
+        penalty_product: float | None = ...,
+        components_json: str | None = ...,
+        penalties_json: str | None = ...,
+        gate_failure: str | None = ...,
+        rank: int | None = ...,
+        survived: bool | None = ...,
+        behaviour_hash: str | None = ...,
+    ) -> Any:
+        """Write a candidate's evaluation into the columns section 6 allows to change."""
         ...
 
     def add_mutations(self, candidate_id: str, mutations: Sequence[Mapping[str, Any]]) -> None:
         """Record the edits that produced a child. Append-only; never updated (INV-10)."""
         ...
 
-    def record_promotion(self, **fields: Any) -> Any:
+    def record_promotion(
+        self,
+        *,
+        candidate_id: str,
+        evolution_id: str,
+        gen_index: int,
+        segment: str,
+        reason: str,
+        promotion_id: str | None = ...,
+    ) -> Any:
         """Record a promotion **before** the run it authorises executes (INV-9)."""
         ...
 
-    def candidates_for(self, evolution_id: str, gen_index: int | None = ...) -> list[Any]:
+    def candidates_for(self, evolution_id: str, gen_index: int | None = ...) -> Sequence[Any]:
         """A run's candidates, deterministically ordered."""
         ...
 
-    def ancestry(self, candidate_id: str) -> list[Any]:
+    def ancestry(self, candidate_id: str) -> Sequence[Any]:
         """Every ancestor of a candidate, oldest first, ending with itself."""
         ...
 
-    def descendants(self, candidate_id: str) -> list[Any]:
+    def descendants(self, candidate_id: str) -> Sequence[Any]:
         """Every candidate reachable from this one by following parent links down."""
         ...
 

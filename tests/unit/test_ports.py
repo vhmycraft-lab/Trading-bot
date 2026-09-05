@@ -181,7 +181,13 @@ class StubExperimentStore:
     def finish_evolution_run(self, evolution_id: str, status: str, *_a: Any, **_k: Any) -> Any:
         return None
 
+    def count_evaluation(self, evolution_id: str, n: int = 1) -> int:
+        return 0
+
     def add_generation(self, **_fields: Any) -> Any:
+        return None
+
+    def score_candidate(self, candidate_id: str, **_fields: Any) -> Any:
         return None
 
     def add_candidate(self, **_fields: Any) -> Any:

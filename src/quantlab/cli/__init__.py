@@ -31,6 +31,7 @@ from quantlab.adapters.store.sqlite import (
     missing_tables,
     upgrade_to_head,
 )
+from quantlab.cli import backtest as backtest_module
 from quantlab.cli import data as data_module
 from quantlab.cli import doctor as doctor_module
 from quantlab.container import PROFILES, Container, Profile, build_container
@@ -117,6 +118,7 @@ db_app = typer.Typer(help="Manage the experiment database.", no_args_is_help=Tru
 app.add_typer(config_app, name="config")
 app.add_typer(db_app, name="db")
 app.add_typer(data_module.app, name="data")
+app.add_typer(backtest_module.app, name="backtest")
 
 
 def _version_callback(value: bool) -> None:

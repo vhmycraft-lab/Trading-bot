@@ -27,6 +27,17 @@ FORBIDDEN_ORDER_TOKENS = (
 # --- INV-4 ------------------------------------------------------------------
 FORBIDDEN_BUILTINS = frozenset({"exec", "eval", "compile", "__import__"})
 FORBIDDEN_MODULES = frozenset({"importlib", "pickle", "marshal", "shelve"})
+
+#: The one module under a forbidden root that is still permitted, anywhere.
+#:
+#: ``importlib`` is banned because it is how code gets imported dynamically, which
+#: is how untrusted code would reach this process. ``importlib.metadata`` cannot do
+#: that: it reads installed-distribution metadata off disk and executes nothing.
+#: Spec section 11.3 requires it by name — ``env.json`` records "``packages`` from
+#: ``importlib.metadata``" — so banning it would forbid what the specification
+#: mandates while protecting against nothing. Narrow, named, and justified: every
+#: other name under ``importlib`` remains forbidden outside the sandbox.
+ALLOWED_UNDER_FORBIDDEN_ROOT = frozenset({"importlib.metadata"})
 SANDBOX_PACKAGE = "quantlab.sandbox"
 
 # --- INV-8 ------------------------------------------------------------------
@@ -146,7 +157,7 @@ def test_inv4_no_dynamic_execution_outside_sandbox() -> None:
                 offenders.append(f"{path}:{node.lineno} {node.func.id}()")
         for imported in _imported_modules(tree):
             root = imported.split(".")[0]
-            if root in FORBIDDEN_MODULES:
+            if root in FORBIDDEN_MODULES and imported not in ALLOWED_UNDER_FORBIDDEN_ROOT:
                 offenders.append(f"{path}: import {imported}")
     assert not offenders, "INV-4: dynamic execution outside sandbox/: " + "; ".join(offenders)
 
@@ -195,3 +206,25 @@ def test_inv8_core_imports_only_core() -> None:
         for imported in _imported_modules(_parse(path)):
             prefix = _quantlab_prefix(imported)
             assert prefix in (None, "quantlab.core"), f"{module} imports {imported}"
+
+
+def test_only_importlib_metadata_is_exempt_from_the_dynamic_import_ban() -> None:
+    """The narrowing must stay narrow.
+
+    ``importlib.metadata`` is permitted because spec section 11.3 requires it and
+    it executes nothing. If that exemption ever grew to cover ``importlib`` itself,
+    or ``importlib.util``, INV-4's ban would be gone in everything but name.
+    """
+    assert frozenset({"importlib.metadata"}) == ALLOWED_UNDER_FORBIDDEN_ROOT
+    for name in ("importlib", "importlib.util", "importlib.machinery", "pickle"):
+        assert name not in ALLOWED_UNDER_FORBIDDEN_ROOT
+
+
+def test_the_exemption_is_used_only_where_the_spec_asks_for_it() -> None:
+    """Section 11.3 names it for ``env.json`` and nowhere else."""
+    users = [
+        _module_name(path)
+        for path in _python_files()
+        if any(name in ALLOWED_UNDER_FORBIDDEN_ROOT for name in _imported_modules(_parse(path)))
+    ]
+    assert users == ["quantlab.experiments.env"]

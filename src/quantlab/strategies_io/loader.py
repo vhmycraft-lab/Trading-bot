@@ -325,7 +325,7 @@ class StrategyLoader:
 
     def lineage(self, strategy_id: str) -> list[StrategyVersionRecord]:
         """Every ancestor of a version, oldest first (spec section 11.1)."""
-        return self.store.lineage(strategy_id)
+        return list(self.store.lineage(strategy_id))
 
     # -- internals ----------------------------------------------------------
     def _require_supported_style(self, report: AstReport) -> str:
