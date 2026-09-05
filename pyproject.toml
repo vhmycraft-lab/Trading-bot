@@ -44,7 +44,10 @@ src = ["src", "tests"]
 # design docs use compact illustrative signatures (`bar_index: int; side: Side`)
 # that are documentation, not source; reflowing them to source style makes them
 # markedly longer and harder to scan. Prose is reviewed by reading it.
-extend-exclude = ["*.md"]
+# `tests/fixtures/strategies/rejected/` holds deliberately unsafe strategy source:
+# it is test *input* for the AST checker, never imported, and every file breaks a
+# rule on purpose. Linting it would report the defects the fixtures exist to carry.
+extend-exclude = ["*.md", "tests/fixtures/strategies/rejected"]
 
 [tool.ruff.lint]
 select = [
@@ -76,6 +79,7 @@ ignore = [
 # ignore its context. Adding ClassVar noise to each would fight the template
 # the specification prescribes, and the AST checker restricts their imports.
 "strategies/**" = ["RUF012", "ARG002"]
+"tests/fixtures/strategies/**" = ["RUF012", "ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["quantlab"]
@@ -98,8 +102,7 @@ disallow_untyped_defs = true
 warn_return_any = true
 
 [[tool.mypy.overrides]]
-# Re-add "quantlab.sandbox.*" here when the sandbox package lands (spec phase D, T17).
-module = ["quantlab.core.*", "quantlab.ports.*"]
+module = ["quantlab.core.*", "quantlab.ports.*", "quantlab.sandbox.*"]
 strict = true
 
 [[tool.mypy.overrides]]

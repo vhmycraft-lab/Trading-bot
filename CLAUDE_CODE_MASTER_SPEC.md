@@ -1,13 +1,14 @@
 # CLAUDE_CODE_MASTER_SPEC.md
 
 **Project:** QuantLab — AI-assisted quantitative trading *research and paper-trading* platform
-**Spec version:** 1.1.3 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
+**Spec version:** 1.1.4 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
 
 **Change log**
 
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.1.4 | §9.2 made precise while implementing the AST checker: every rule now has a stable machine-readable **violation code**, the checker reports *all* violations at once rather than the first, and the hand-rolled-stop rule of §9.1 is stated as a rejection (`E_INTRABAR_STOP`) with its false-positive boundary defined — only a `high`/`low` comparison that also mentions an entry price is refused. |
 | 1.1.3 | Addition found while implementing the engine: new §8.7 **Ruin**. Equity reaching zero now liquidates the account and stops trading, instead of continuing to trade a negative balance. |
 | 1.1.2 | Correction found while implementing the engine: `G_SANITY` (§14.3) compared the *realised* `position_frac` against `max_position_fraction + 1e-9`, which no correct run can satisfy — a position sized at the deciding bar's close is marked one bar later, after the market has moved. The gate now allows a documented drift allowance, and the exact no-drift invariant moved to where it holds. |
 | 1.1.1 | Corrections to 1.1, found while implementing the config schema: `mutation.structural` now carries one weight per operator in the §13.4 table (`replace_indicator` and `change_tree_mode` were missing); `diversity.max_immigrants` default lowered 6 → 4 and constrained to `n_offspring + n_immigrants`, since an immigrant boost displaces offspring and never a survivor. |
@@ -1061,6 +1062,32 @@ For vectorized strategies the engine calls `signals()` once on the *full segment
 - `warmup_bars` MUST be an `int` ≥ the largest lookback used (the leakage probe also checks this empirically).
 - No mutable module-level state; instance state only.
 - File ≤ 400 lines; `logic_lines` (non-blank, non-comment, non-import) stored in DB.
+- No hand-rolled intrabar stop: a comparison of the current bar's own `high`/`low` against an entry price is rejected (§9.1). Reading a closed bar's `high`/`low` for any other purpose — a breakout channel, a range — is legitimate and MUST be accepted.
+
+The checker MUST report **every** violation of a file in one pass, never the first
+only: a strategy author (human or model) that is told one problem per attempt
+rewrites blind. Each violation carries a stable code, a message, and a line number
+where one exists:
+
+| Code | Rule |
+|---|---|
+| `E_SYNTAX` | the source does not parse |
+| `E_FILE_TOO_LONG` | more than 400 lines |
+| `E_FORBIDDEN_IMPORT` | imports a banned module, however spelled |
+| `E_IMPORT_NOT_ALLOWED` | imports a module absent from `sandbox.allowed_imports` |
+| `E_STAR_IMPORT` | `from x import *` |
+| `E_RELATIVE_IMPORT` | relative import |
+| `E_FORBIDDEN_NAME` | mentions a banned builtin or module name |
+| `E_DUNDER_ACCESS` | attribute access to a name starting with `__` |
+| `E_NO_CLASS` / `E_MULTIPLE_CLASSES` | not exactly one class |
+| `E_MODULE_CODE` | module-level code beyond imports, constants, the class, `STRATEGY` |
+| `E_MODULE_STATE` / `E_MUTABLE_MODULE_STATE` | non-constant or mutable module-level name |
+| `E_NO_PARAMS` / `E_PARAMS_NOT_LITERAL` | `params` missing, or not a dict literal |
+| `E_PARAM_NOT_SPEC` / `E_UNBOUNDED_PARAM` / `E_TOO_MANY_PARAMS` | parameter declaration faults |
+| `E_NO_WARMUP` / `E_WARMUP_NOT_INT` / `E_WARMUP_NEGATIVE` | `warmup_bars` faults |
+| `E_NO_STRATEGY_EXPORT` / `E_STRATEGY_MISMATCH` | `STRATEGY` missing or naming another class |
+| `E_INTRABAR_STOP` | hand-rolled intrabar stop (§9.1) |
+| `W_LOGIC_LINES` | *warning*: above `validation.max_logic_lines`, where the §14 complexity penalty applies |
 
 ### 9.3 Indicator library (`core/indicators.py`)
 
@@ -1981,7 +2008,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T14 | AMENDED — **done** (goldens are T15) | `adapters/engine/simple_bar.py` at `engine_version = "1"`, including §8.6 risk exits and §8.7 ruin |
 | T15 | AMENDED — **done** | `strategies/TEMPLATE.py`, four baselines with explicit `RiskSpec()`, `scripts/make_fixtures.py`, the real 1 416-bar 2023-01/02 Parquet fixture (checksum-verified from the Binance archive) and five golden cases including one that exercises the §8.6 risk exits |
 | T16 | **done** | `tests/synthetic/` — no edge in noise, trend and reversion behave as expected |
-| T17 | AMENDED | AST checker also accepts compiler output and rejects hand-rolled stops |
+| T17 | AMENDED — **done** | `sandbox/ast_check.py`; 29 rejected and 5 accepted fixtures, the accepted set including compiler output and a breakout that legitimately reads the bar's high; every violation code exercised |
 | T18–T19 | unchanged | — |
 | T20 | AMENDED | loader handles `kind='genome'`, storing `genome_json` alongside the compiled source |
 | T21 | AMENDED | migration `0002` adds the five evolution tables; store port gains the evolution methods |
@@ -2047,7 +2074,7 @@ AC: `test_splits.py` + property test; printing the policy shows bar counts per s
 
 ### Phase D — Sandbox & leakage
 
-**T17 🔒 AST checker.** `sandbox/ast_check.py` + malicious fixtures. AC: `test_ast_check.py` 20/20 rejected, 5/5 accepted, violation codes listed.
+**T17 🔒 AST checker.** `sandbox/ast_check.py` + malicious fixtures. AC: `test_ast_check.py` 20/20 rejected, 5/5 accepted, violation codes listed. — **done**: 29/29 rejected (each asserted against its *exact* code set), 5/5 accepted, plus the shipped template and four baselines; codes tabulated in §9.2.
 **T18 🔒 Sandbox runner.** `sandbox/runner.py`, `child_main.py`. AC: `test_sandbox.py` (timeout, memory, socket, import hook, round-trip); `test_architecture.py` still green.
 **T19 🔒 Leakage probe.** `core/validation/leakage.py` + leaky/honest fixtures. AC: `tests/leakage/` all detected / all pass; vectorized strategies auto-probed at load.
 **T20 Loader.** `strategies_io/loader.py`. AC: `test_loader.py`; tampering a stored file is detected.

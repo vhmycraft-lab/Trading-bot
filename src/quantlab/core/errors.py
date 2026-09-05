@@ -108,10 +108,19 @@ class StrategySafetyError(StrategyError):
     """The AST checker rejected the source."""
 
     def __init__(
-        self, message: str, /, violations: list[str] | None = None, **context: Any
+        self,
+        message: str,
+        /,
+        violations: list[str] | None = None,
+        codes: list[str] | None = None,
+        **context: Any,
     ) -> None:
         super().__init__(message, **context)
+        #: Rendered violations, one per line, for a human.
         self.violations: list[str] = list(violations or [])
+        #: The bare violation codes, for a caller that wants to react to a rule
+        #: rather than parse a message.
+        self.codes: list[str] = list(codes or [])
 
 
 class StrategyRuntimeError(StrategyError):

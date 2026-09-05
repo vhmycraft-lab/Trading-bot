@@ -23,15 +23,19 @@ repos:
   # apply or which version enforces them.
   - repo: local
     hooks:
+      # --force-exclude: pre-commit passes file paths explicitly, and without it
+      # ruff ignores its own `extend-exclude`. The AST checker's rejected fixtures
+      # are deliberately unsafe source; auto-fixing them would quietly repair the
+      # defects the tests exist to detect.
       - id: ruff-format
         name: ruff-format
-        entry: uv run ruff format
+        entry: uv run ruff format --force-exclude
         language: system
         types_or: [python, pyi]
 
       - id: ruff
         name: ruff
-        entry: uv run ruff check --fix --exit-non-zero-on-fix
+        entry: uv run ruff check --fix --exit-non-zero-on-fix --force-exclude
         language: system
         types_or: [python, pyi]
 
