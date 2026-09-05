@@ -20,6 +20,11 @@ from quantlab.sandbox.ast_check import (
     count_logic_lines,
     require_safe_source,
 )
+from quantlab.sandbox.runner import (
+    SandboxLimits,
+    SandboxOutcome,
+    SandboxRunner,
+)
 
 __all__ = [
     "DEFAULT_ALLOWED_IMPORTS",
@@ -27,6 +32,9 @@ __all__ = [
     "DEFAULT_MAX_PARAMS",
     "MAX_SOURCE_LINES",
     "AstReport",
+    "SandboxLimits",
+    "SandboxOutcome",
+    "SandboxRunner",
     "Violation",
     "check_source",
     "count_logic_lines",
