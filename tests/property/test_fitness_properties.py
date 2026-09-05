@@ -1,15 +1,18 @@
-"""Property tests for fitness and concentration (master spec sections 13.3, 14.4).
+"""Property tests for fitness, concentration and diversity (spec sections 13.3-13.5).
 
-Section 20 names two of these directly: fitness lies in ``[0, 1]`` or equals
-``FITNESS_REJECTED`` for *any* metric set, and ``retention_k`` is monotonically
-non-increasing in ``k``. Both are the kind of claim a table of examples cannot
-establish — the interesting inputs are the ones nobody thought to write down.
+Section 20 names four of these directly: fitness lies in ``[0, 1]`` or equals
+``FITNESS_REJECTED`` for *any* metric set; ``retention_k`` is monotonically
+non-increasing in ``k``; and similarity is symmetric, in ``[0, 1]``, and 1.0 only
+for behaviourally identical candidates. All are the kind of claim a table of
+examples cannot establish — the interesting inputs are the ones nobody thought to
+write down.
 """
 
 from __future__ import annotations
 
 import itertools
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -21,12 +24,14 @@ from quantlab.core.fitness import (
     SensitivityReport,
     compute_fitness,
 )
+from quantlab.core.genome import Condition, ConditionTree, Operand, StrategyGenome
 from quantlab.core.metrics import MetricSet
 from quantlab.core.types import Trade
 from quantlab.core.validation.concentration import (
     remaining_after_removal,
     trade_removal_report,
 )
+from quantlab.evolution.diversity import CandidateView, agreement, jaccard, similarity
 
 SETTINGS = FitnessSettings()
 
@@ -155,3 +160,77 @@ def test_removing_more_than_there_are_winners_removes_every_winner(
     fall once the winners run out."""
     losers = [t for t in ledger if t.pnl <= 0]
     assert remaining_after_removal(ledger, len(ledger) + 5) == losers
+
+
+# ---------------------------------------------------------------------------
+# diversity (spec section 13.5)
+# ---------------------------------------------------------------------------
+_positions = st.lists(st.sampled_from([-1.0, -0.5, 0.0, 0.25, 1.0]), min_size=1, max_size=30)
+
+
+@st.composite
+def _views(draw: st.DrawFn) -> list[CandidateView]:
+    """Two candidates over the same bars, so their positions are comparable."""
+    length = draw(st.integers(min_value=1, max_value=30))
+    fixed = st.lists(
+        st.sampled_from([-1.0, -0.5, 0.0, 0.25, 1.0]), min_size=length, max_size=length
+    )
+    genomes = st.sampled_from([_crossover(">"), _crossover("<"), _crossover(">=")])
+    return [CandidateView.from_genome(name, draw(genomes), draw(fixed)) for name in ("a", "b")]
+
+
+def _crossover(op: str) -> StrategyGenome:
+    fast = Operand(kind="indicator", name="sma", kwargs={"n": 10})
+    slow = Operand(kind="indicator", name="sma", kwargs={"n": 30})
+    return StrategyGenome(
+        name="pair",
+        entry=ConditionTree(conditions=(Condition(left=fast, op=op, right=slow),)),  # type: ignore[arg-type]
+        warmup_bars=30,
+    )
+
+
+@given(pair=_views())
+@settings(max_examples=200, deadline=None)
+def test_similarity_is_symmetric_and_in_the_unit_interval(pair: list[CandidateView]) -> None:
+    """Section 20's stated property. An asymmetric similarity would make niching
+    depend on the order the ranking happened to arrive in."""
+    left, right = pair
+    forward = similarity(left, right)
+    assert 0.0 <= forward <= 1.0
+    assert forward == pytest.approx(similarity(right, left), abs=1e-12)
+
+
+@given(pair=_views())
+@settings(max_examples=200, deadline=None)
+def test_similarity_is_one_only_for_behaviourally_identical_candidates(
+    pair: list[CandidateView],
+) -> None:
+    """Section 20's other stated property. Two candidates scoring 1.0 must
+    genuinely be the same candidate as far as the search can tell: they hold the
+    same exposure sign on every bar either is in the market, and they are built
+    from the same structural parts.
+
+    Note which way the ``behaviour_hash`` implication runs. The hash is
+    magnitude-sensitive and agreement is sign-based, so an equal hash *implies*
+    perfect agreement but perfect agreement does not imply an equal hash — a
+    candidate sizing at a quarter and one sizing at a whole are behaviourally
+    identical to the measure and hash differently. That direction is the useful
+    one: the hash is a cheap sufficient condition for a duplicate, and a
+    duplicate detector must never claim two candidates are the same when they
+    are not.
+    """
+    left, right = pair
+    if similarity(left, right) == 1.0:
+        assert agreement(left.positions, right.positions) == 1.0  # type: ignore[arg-type]
+        assert jaccard(left.signature, right.signature) == 1.0
+    if left.behaviour == right.behaviour:
+        assert agreement(left.positions, right.positions) == 1.0  # type: ignore[arg-type]
+
+
+@given(pair=_views())
+@settings(max_examples=150, deadline=None)
+def test_a_candidate_is_always_perfectly_similar_to_itself(
+    pair: list[CandidateView],
+) -> None:
+    for view in pair:
+        assert similarity(view, view) == 1.0
