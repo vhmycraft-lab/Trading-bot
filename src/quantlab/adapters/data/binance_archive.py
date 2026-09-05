@@ -80,6 +80,31 @@ _KLINE_COLUMNS: Final[tuple[str, ...]] = (
     "ignore",
 )
 
+#: Header names Binance has used for the same column across archive generations.
+#: A header-bearing file calls the trade count ``count``; without this map the
+#: column silently becomes zero, which is the kind of quiet corruption every
+#: other path in this codebase is built to refuse.
+_HEADER_ALIASES: Final[dict[str, str]] = {
+    "count": "trades",
+    "number_of_trades": "trades",
+    "num_trades": "trades",
+    "quote_asset_volume": "quote_volume",
+    "taker_buy_base_asset_volume": "taker_buy_volume",
+    "taker_buy_quote_asset_volume": "taker_buy_quote_volume",
+}
+
+#: Columns the canonical frame needs from the archive.
+_REQUIRED_SOURCE_COLUMNS: Final[tuple[str, ...]] = (
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "quote_volume",
+    "trades",
+)
+
 #: Fixed Parquet options so a rebuild produces byte-identical files.
 _PARQUET_KWARGS: Final[dict[str, Any]] = {
     "engine": "pyarrow",
@@ -198,11 +223,22 @@ def parse_kline_bytes(payload: bytes, *, source: str = "<memory>") -> pd.DataFra
         names=None if has_header else list(_KLINE_COLUMNS),
     )
     if has_header:
-        frame.columns = [str(name).strip().lower() for name in frame.columns]
+        frame.columns = [
+            _HEADER_ALIASES.get(lowered, lowered)
+            for lowered in (str(name).strip().lower() for name in frame.columns)
+        ]
 
-    missing = [name for name in ("open_time", "open", "high", "low", "close") if name not in frame]
+    missing = [name for name in _REQUIRED_SOURCE_COLUMNS if name not in frame]
     if missing:
-        raise DataValidationError("archive CSV is missing columns", source=source, missing=missing)
+        # Fail closed. Defaulting a missing column to zero would produce a
+        # dataset that looks complete and is not, and nothing downstream could
+        # tell the difference.
+        raise DataValidationError(
+            "archive CSV is missing columns",
+            source=source,
+            missing=missing,
+            found=[str(name) for name in frame.columns],
+        )
 
     out = pd.DataFrame(
         {
@@ -212,10 +248,8 @@ def parse_kline_bytes(payload: bytes, *, source: str = "<memory>") -> pd.DataFra
             "low": frame["low"].astype("float64"),
             "close": frame["close"].astype("float64"),
             "volume": frame["volume"].astype("float64"),
-            "quote_volume": frame.get("quote_volume", pd.Series(np.zeros(len(frame)))).astype(
-                "float64"
-            ),
-            "trades": frame.get("trades", pd.Series(np.zeros(len(frame)))).astype("int64"),
+            "quote_volume": frame["quote_volume"].astype("float64"),
+            "trades": frame["trades"].astype("int64"),
         }
     )
     out["is_gap_filled"] = False

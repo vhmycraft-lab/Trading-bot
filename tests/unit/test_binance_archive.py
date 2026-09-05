@@ -492,3 +492,69 @@ def test_conflicting_real_bars_still_raise(parquet_store: ParquetBarStore) -> No
     altered.loc[:, "close"] = float(altered["close"].iloc[0]) + 10.0
     with pytest.raises(DataValidationError, match="different data"):
         ingestor.rebuild("BTC/USDT", "1h", extra_frames=[altered])
+
+
+# ---------------------------------------------------------------------------
+# header generations
+# ---------------------------------------------------------------------------
+def _zip_with(body: str, name: str = "x.csv") -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, body)
+    return buffer.getvalue()
+
+
+BINANCE_HEADER = (
+    "open_time,open,high,low,close,volume,close_time,quote_volume,count,"
+    "taker_buy_volume,taker_buy_quote_volume,ignore"
+)
+BINANCE_ROW = (
+    "1672531200000,16541.77,16545.70,16508.39,16529.67,4364.83,"
+    "1672534799999,72146290.0,149854,0,0,0"
+)
+
+
+def test_a_header_bearing_archive_keeps_its_trade_count() -> None:
+    """Regression: Binance's header calls the trade count ``count``.
+
+    Without an alias the column silently became zero -- a dataset that looks
+    complete and is not, which nothing downstream could detect.
+    """
+    parsed = parse_kline_bytes(_zip_with(BINANCE_HEADER + "\n" + BINANCE_ROW + "\n"))
+    assert int(parsed["trades"].iloc[0]) == 149_854
+    assert float(parsed["quote_volume"].iloc[0]) == pytest.approx(72_146_290.0)
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("count", "trades"),
+        ("number_of_trades", "trades"),
+        ("quote_asset_volume", "quote_volume"),
+    ],
+)
+def test_known_header_aliases_are_resolved(alias: str, canonical: str) -> None:
+    header = (
+        BINANCE_HEADER.replace("count", "PLACEHOLDER") if canonical == "trades" else BINANCE_HEADER
+    )
+    header = (
+        header.replace("quote_volume", "PLACEHOLDER") if canonical == "quote_volume" else header
+    )
+    header = header.replace("PLACEHOLDER", alias)
+    parsed = parse_kline_bytes(_zip_with(header + "\n" + BINANCE_ROW + "\n"))
+    assert parsed[canonical].iloc[0] != 0
+
+
+def test_a_header_with_an_unknown_name_fails_closed() -> None:
+    """Better a loud failure than a silently zeroed column."""
+    header = BINANCE_HEADER.replace("count", "mystery_column")
+    with pytest.raises(DataValidationError, match="missing columns"):
+        parse_kline_bytes(_zip_with(header + "\n" + BINANCE_ROW + "\n"))
+
+
+def test_headers_are_case_and_whitespace_insensitive() -> None:
+    header = " OPEN_TIME , Open ,HIGH,low,Close,VOLUME,close_time,Quote_Volume,COUNT,a,b,c"
+    parsed = parse_kline_bytes(_zip_with(header + "\n" + BINANCE_ROW + "\n"))
+    assert int(parsed["trades"].iloc[0]) == 149_854

@@ -37,6 +37,7 @@ Phases 1 (foundation) and 2 (historical market data) are complete.
 | Backtest engine | `quantlab.adapters.engine.simple_bar` | complete (spec §8.4, §8.6, §8.7) |
 | Metrics | `quantlab.core.metrics` | complete (spec §10) |
 | Baseline strategies | `strategies/` | complete (spec §9.4, §9.5) |
+| Golden fixtures | `tests/fixtures/`, `tests/golden/` | complete (spec T15; 1 416 real bars) |
 | CLI | `quantlab.cli` (`version`, `doctor`, `config`, `db`, `data`) | complete |
 
 Not implemented yet, by design: the sandbox, the evolutionary optimiser, the
@@ -270,6 +271,23 @@ imports `core`; adapters import `core` and `ports`; only `container.py`, `cli/`
 and `tests/` may import `adapters`.
 
 ---
+
+## Test fixtures
+
+`tests/fixtures/data/btcusdt_1h_2023-01_02.parquet` holds **1 416 real BTC/USDT
+hourly bars** from January and February 2023, downloaded from the Binance
+archive and verified against its published SHA-256. It is committed (72 KB) so
+the golden tests run offline.
+
+```bash
+uv run python scripts/make_fixtures.py data     # re-download (needs network)
+uv run python scripts/make_fixtures.py golden   # re-record goldens (offline)
+```
+
+The goldens exist to **fail**. Any change to a fill rule, a cost, a risk exit or
+a metric definition changes them, and that failure forces the change to be
+deliberate: regenerating them without bumping `engine_version` is caught, and
+bumping `engine_version` without regenerating them is caught too.
 
 ## Development
 

@@ -1915,7 +1915,9 @@ QuantLabError
 
 Property tests (`tests/property/`, hypothesis): indicators causal (append-invariance); metric invariants; engine conservation `abs(equity − (cash + qty·close)) < 1e-6` every bar; slippage ≥ 0; splits never overlap; canonical JSON idempotent; **fitness ∈ [0,1] ∪ {FITNESS_REJECTED} for any metric set**; **every mutation of a valid genome is valid or is rejected, never silently invalid**; **similarity is symmetric, in [0,1], and 1.0 only for behaviourally identical candidates**; **retention_k is monotonically non-increasing in k**.
 
-Golden tests (`tests/golden/`): baselines on `btcusdt_1h_2023-01_02.parquet` ⇒ `trades.parquet` and `metrics.json` byte-identical (Parquet written with fixed `pyarrow` options, metrics JSON with `repr`-precision floats).
+Golden tests (`tests/golden/`): baselines on `btcusdt_1h_2023-01_02.parquet` ⇒ `trades.parquet` compared exactly value-by-value and `metrics.json` compared byte-for-byte (Parquet written with fixed `pyarrow` options, metrics JSON canonical with full float precision). The fixture's own SHA-256 is pinned in the test, because a changed byte there changes every golden.
+
+Five cases are recorded — `buy_and_hold`, `sma_cross`, `rsi_reversion`, `random_entry` and `sma_cross_stopped` — and between them they cover all three `exit_reason` values, so a change to the §8.6 risk exits cannot pass unnoticed. Regenerate only with `scripts/make_fixtures.py golden`, and only alongside an `engine_version` bump: `test_every_golden_records_the_current_engine_version` fails on a bump without regeneration, and the value comparisons fail on a regeneration without a bump.
 
 Leakage tests (`tests/leakage/`): all leaky fixtures detected; all honest fixtures pass.
 
@@ -1977,7 +1979,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T12 | AMENDED — **done** (AST part is T17) | `Strategy` carries `risk` and `sizing`; `ParamSpec`, `Context`, `IndicatorCache` implemented |
 | T13 | **done** | `core/indicators.py`, all 14 indicators, causality proved per bar |
 | T14 | AMENDED — **done** (goldens are T15) | `adapters/engine/simple_bar.py` at `engine_version = "1"`, including §8.6 risk exits and §8.7 ruin |
-| T15 | AMENDED — **partly done** | `strategies/TEMPLATE.py` and the four baselines exist and declare an explicit `RiskSpec()`; the committed golden fixtures still need the real 2-month Parquet file |
+| T15 | AMENDED — **done** | `strategies/TEMPLATE.py`, four baselines with explicit `RiskSpec()`, `scripts/make_fixtures.py`, the real 1 416-bar 2023-01/02 Parquet fixture (checksum-verified from the Binance archive) and five golden cases including one that exercises the §8.6 risk exits |
 | T16 | **done** | `tests/synthetic/` — no edge in noise, trend and reversion behave as expected |
 | T17 | AMENDED | AST checker also accepts compiler output and rejects hand-rolled stops |
 | T18–T19 | unchanged | — |
