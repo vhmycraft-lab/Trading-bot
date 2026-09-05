@@ -149,6 +149,12 @@ class AstReport:
     logic_lines: int = 0
     n_params: int = 0
     n_lines: int = 0
+    #: The declaration as written, read from the parse the checker already did.
+    #: A caller that needs these must not run the module to find them out (INV-4),
+    #: and must not re-derive them from a second parse that could disagree.
+    style: str = ""
+    warmup_bars: int = 0
+    param_names: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -445,15 +451,26 @@ def _check_params(cls: ast.ClassDef, max_params: int, report: list[Violation]) -
     return n_params
 
 
+def _literal_or_none(node: ast.expr | None) -> object:
+    """The literal value of ``node``, or ``None`` if it is not one.
+
+    ``ast.literal_eval`` evaluates literals only, so this cannot run any of the
+    strategy's code: reading a declaration must never become executing it (INV-4).
+    """
+    if node is None:
+        return None
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return None
+
+
 def _check_warmup(cls: ast.ClassDef, report: list[Violation]) -> None:
     value = _find_class_attribute(cls, "warmup_bars")
     if value is None:
         report.append(Violation("E_NO_WARMUP", "the class must declare `warmup_bars`", cls.lineno))
         return
-    try:
-        literal: object = ast.literal_eval(value)
-    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
-        literal = None
+    literal = _literal_or_none(value)
     if not isinstance(literal, int) or isinstance(literal, bool):
         report.append(
             Violation(
@@ -545,10 +562,25 @@ def check_source(
     violations.extend(checker.violations)
 
     n_params = 0
+    param_names: tuple[str, ...] = ()
+    style = ""
+    warmup_bars = 0
     if cls is not None:
         params_node = _find_class_attribute(cls, "params")
         if isinstance(params_node, ast.Dict):
             n_params = len(params_node.keys)
+            param_names = tuple(
+                str(key.value)
+                for key in params_node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+        style_node = _find_class_attribute(cls, "style")
+        if isinstance(style_node, ast.Constant) and isinstance(style_node.value, str):
+            style = style_node.value
+        warmup_node = _find_class_attribute(cls, "warmup_bars")
+        warmup_literal = _literal_or_none(warmup_node)
+        if isinstance(warmup_literal, int) and not isinstance(warmup_literal, bool):
+            warmup_bars = warmup_literal
 
     logic_lines = count_logic_lines(source)
     if logic_lines > max_logic_lines:
@@ -569,6 +601,9 @@ def check_source(
         logic_lines=logic_lines,
         n_params=n_params,
         n_lines=len(lines),
+        style=style,
+        warmup_bars=warmup_bars,
+        param_names=param_names,
     )
 
 

@@ -29,6 +29,7 @@ __all__ = [
     "ExperimentStore",
     "FamilyRecord",
     "RunRecord",
+    "SourceStore",
     "StrategyVersionRecord",
     "VerdictRecord",
 ]
@@ -65,7 +66,10 @@ class StrategyVersionRecord(Protocol):
     strategy_id: str
     family_id: str
     parent_strategy_id: str | None
+    #: Where the immutable copy lives, as a key into a :class:`SourceStore`.
+    code_path: str
     code_sha256: str
+    class_name: str
     style: str
     logic_lines: int
 
@@ -286,4 +290,36 @@ class ArtifactStore(Protocol):
 
     def read_json(self, run_id: str, name: str) -> Any:
         """Read back an object written by :meth:`write_json`."""
+        ...
+
+
+@runtime_checkable
+class SourceStore(Protocol):
+    """The immutable copy of a strategy's source, addressed by ``strategy_id``.
+
+    Separate from :class:`ArtifactStore`, which is keyed by ``run_id`` and holds
+    what a run *produced* (spec section 11.3). Strategy source is an input, it
+    outlives every run that cites it, and its name is a hash of its own bytes —
+    filing it under ``artifacts/runs/`` would make it look like a run that never
+    happened.
+
+    A strategy version is append-only (section 6), so writing the same id twice
+    must be idempotent and writing *different* bytes under an existing id is a
+    contradiction the implementation is required to refuse.
+    """
+
+    def write_source(self, strategy_id: str, source: str) -> str:
+        """Store ``source`` under ``strategy_id`` and return its ``code_path``."""
+        ...
+
+    def read_source(self, strategy_id: str) -> str:
+        """Return the stored source, or raise if there is none."""
+        ...
+
+    def path_for(self, strategy_id: str) -> Path:
+        """The file the source occupies, whether or not it exists yet."""
+        ...
+
+    def exists(self, strategy_id: str) -> bool:
+        """Whether a source is stored under ``strategy_id``."""
         ...

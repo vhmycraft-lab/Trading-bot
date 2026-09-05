@@ -2051,7 +2051,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T17 | AMENDED — **done** | `sandbox/ast_check.py`; 29 rejected and 5 accepted fixtures, the accepted set including compiler output and a breakout that legitimately reads the bar's high; every violation code exercised |
 | T18 | AMENDED — **done** | `sandbox/{protocol,guards,runner,child_main}.py`; the child runs the engine, named in the request and constrained to `quantlab.adapters.engine.*` (ADR 0004) |
 | T19 | unchanged | — |
-| T20 | AMENDED | loader handles `kind='genome'`, storing `genome_json` alongside the compiled source |
+| T20 | AMENDED — **done for source-loaded strategies** | `strategies_io/loader.py`, `SourceStore` port + `FileSourceStore`. **Deferred:** `kind='genome'` and `genome_json` (no column before migration `0002`; needs T45/T46). **Refused:** `style='vectorized'`, until the §14.2 probe exists (T19) |
 | T21 | AMENDED — **done for the 13 base tables** | `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001`, `ports/store.py` grown to §11.1. **Remaining:** migration `0002` for the five evolution tables and the evolution methods on the store port |
 | T22–T23 | unchanged | — |
 | T24 | SUPERSEDED by T47/T51 | Optuna demoted to refinement (§13.8); objectives retained |
@@ -2118,7 +2118,7 @@ AC: `test_splits.py` + property test; printing the policy shows bar counts per s
 **T17 🔒 AST checker.** `sandbox/ast_check.py` + malicious fixtures. AC: `test_ast_check.py` 20/20 rejected, 5/5 accepted, violation codes listed. — **done**: 29/29 rejected (each asserted against its *exact* code set), 5/5 accepted, plus the shipped template and four baselines; codes tabulated in §9.2.
 **T18 🔒 Sandbox runner.** `sandbox/runner.py`, `child_main.py`. AC: `test_sandbox.py` (timeout, memory, socket, import hook, round-trip); `test_architecture.py` still green. — **done**: also `sandbox/protocol.py` (the Parquet/JSON wire format) and `sandbox/guards.py` (import guard, network block); the sandboxed result is equal bar for bar to an in-process run; engine resolution constrained per §21.3 and ADR 0004.
 **T19 🔒 Leakage probe.** `core/validation/leakage.py` + leaky/honest fixtures. AC: `tests/leakage/` all detected / all pass; vectorized strategies auto-probed at load.
-**T20 Loader.** `strategies_io/loader.py`. AC: `test_loader.py`; tampering a stored file is detected.
+**T20 Loader.** `strategies_io/loader.py`. AC: `test_loader.py`; tampering a stored file is detected. — **done**: check → hash → copy → register, in that order, so a rejected file is never registered; `strategy_id` comes from `core.hashing`, never re-derived; tamper detection compares both the recorded `code_sha256` and the id the bytes hash to. A `vectorized` strategy is **refused**, not loaded, while the §14.2 truncation probe §9.1 requires here is unimplemented (T19).
 
 ### Phase E — Store & CLI
 

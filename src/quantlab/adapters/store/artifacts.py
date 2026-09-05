@@ -29,7 +29,12 @@ import pandas as pd
 from quantlab.core.errors import StoreError
 from quantlab.core.hashing import canonical_json
 
-__all__ = ["ARTIFACT_PARQUET_KWARGS", "RUNS_SUBDIR", "FileArtifactStore"]
+__all__ = [
+    "ARTIFACT_PARQUET_KWARGS",
+    "RUNS_SUBDIR",
+    "FileArtifactStore",
+    "FileSourceStore",
+]
 
 #: Fixed for byte stability. Changing any of these invalidates every golden file.
 ARTIFACT_PARQUET_KWARGS: Final[dict[str, Any]] = {
@@ -120,3 +125,71 @@ class FileArtifactStore:
         if not path.is_file():
             raise StoreError("artifact not found", run_id=run_id, name=name, path=str(path))
         return path
+
+
+class FileSourceStore:
+    """Immutable strategy source on disk. Implements :class:`ports.store.SourceStore`.
+
+    One file per strategy version, named by its id — which is
+    ``sha256(code)[:16]``, so the name *is* the checksum of the contents. Two
+    consequences follow, and both are relied on:
+
+    * writing the same source twice is a no-op, because the bytes are already
+      there under that name;
+    * writing *different* bytes under an existing id cannot happen without either
+      a hash collision or a caller that computed the id from something other than
+      the source. Both are refused here rather than silently overwritten, because
+      the overwrite would rewrite the source of every run already citing that id.
+
+    ``code_path`` is stored relative to this root, not as an absolute path: the
+    root is configuration, the name is identity, and a database full of absolute
+    paths stops resolving the moment the repository moves.
+    """
+
+    __slots__ = ("root",)
+
+    #: Spec section 2 puts loaded and generated strategy source here; section 21.7
+    #: git-ignores it.
+    DEFAULT_SUBDIR: Final[str] = "generated"
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root).expanduser().resolve()
+
+    def __repr__(self) -> str:
+        return f"FileSourceStore(root={str(self.root)!r})"
+
+    def path_for(self, strategy_id: str) -> Path:
+        return self.root / f"{_safe_component(strategy_id, what='strategy_id')}.py"
+
+    def exists(self, strategy_id: str) -> bool:
+        return self.path_for(strategy_id).is_file()
+
+    def write_source(self, strategy_id: str, source: str) -> str:
+        """Store ``source`` and return the ``code_path`` recorded in the database.
+
+        Raises:
+            StoreError: a different source is already stored under this id.
+        """
+        path = self.path_for(strategy_id)
+        if path.is_file():
+            stored = path.read_text(encoding="utf-8")
+            if stored != source:
+                raise StoreError(
+                    "a different source is already stored under this strategy id",
+                    strategy_id=strategy_id,
+                    path=str(path),
+                )
+            return path.name
+        self.root.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+        return path.name
+
+    def read_source(self, strategy_id: str) -> str:
+        path = self.path_for(strategy_id)
+        if not path.is_file():
+            raise StoreError(
+                "no stored source for this strategy id",
+                strategy_id=strategy_id,
+                path=str(path),
+            )
+        return path.read_text(encoding="utf-8")
