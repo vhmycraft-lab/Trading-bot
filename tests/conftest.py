@@ -10,12 +10,15 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from sqlalchemy import Engine
 from typer.testing import CliRunner
 
+from quantlab.adapters.data.binance_archive import ParquetBarStore
 from quantlab.adapters.store.sqlite import create_db_engine, upgrade_to_head
 from quantlab.core.config import AppConfig, load_config
+from quantlab.core.types import BarFrame
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -73,3 +76,37 @@ def empty_engine(tmp_path: Path) -> Iterator[Engine]:
 def cli() -> CliRunner:
     """Typer CLI runner with stderr captured separately."""
     return CliRunner()
+
+
+@pytest.fixture
+def bars_df() -> pd.DataFrame:
+    """24 canonical 1h bars starting 2023-01-01T00:00:00Z."""
+    from tests.helpers import make_bars
+
+    return make_bars(24)
+
+
+@pytest.fixture
+def bar_frame(bars_df: pd.DataFrame) -> BarFrame:
+    """The same bars wrapped as an immutable :class:`BarFrame`."""
+    from quantlab.core.types import BarFrame
+
+    return BarFrame(bars_df, symbol="BTC/USDT", timeframe="1h", dataset_id="test0000")
+
+
+@pytest.fixture
+def parquet_store(tmp_path: Path) -> ParquetBarStore:
+    """An empty processed-dataset store rooted in a temporary directory."""
+    from quantlab.adapters.data.binance_archive import ParquetBarStore
+
+    return ParquetBarStore(tmp_path / "data", exchange="binance")
+
+
+@pytest.fixture
+def ingested_store(parquet_store: ParquetBarStore, bars_df: pd.DataFrame) -> ParquetBarStore:
+    """A store holding one ingested month of bars."""
+    from quantlab.adapters.data.binance_archive import BinanceArchiveIngestor
+
+    ingestor = BinanceArchiveIngestor(parquet_store)
+    ingestor.rebuild("BTC/USDT", "1h", extra_frames=[bars_df], built_at="2026-01-01T00:00:00Z")
+    return parquet_store

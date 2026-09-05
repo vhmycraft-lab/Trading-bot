@@ -73,11 +73,50 @@ replace a component, add an adapter and one branch in `build_container`.
 * A run's identity is the full set of its inputs (§11.2), so an identical
   request hits the cache and any changed input produces a new run.
 
-## Current state (Phase 1)
+## Two independent guards against future data
 
-Implemented: `core/{config,errors,hashing,logging}.py`, `ports/secrets.py`,
-`adapters/secrets/*`, `adapters/store/{models,sqlite}.py`, `migrations/`,
-`container.py`, `cli/`.
+The platform separates two failure modes that are often conflated.
+
+| | Within one run | Across the research programme |
+|---|---|---|
+| Failure | a strategy reads bar `t+1` at bar `t` | a researcher tunes against the held-out test set |
+| Guard | `BarWindow` (`core/types.py`) | `PartitionGuard` (`adapters/data/guard.py`) |
+| Invariant | INV-3 | INV-5 |
+| Behaviour | every accessor stops at `i`; reading further raises `LookaheadError` | any range intersecting `[test_start_ts, ∞)` raises `LockboxViolation` |
+| Attached by | the engine, which constructs the window | `build_container`, for every profile except `lockbox` |
+
+Neither guard clips or truncates. Returning less data than was asked for would
+convert a programming error into a subtly wrong backtest, which is precisely the
+outcome both guards exist to prevent.
+
+## Current state (Phases 1-2)
+
+Implemented:
+
+* `core/{config,errors,hashing,logging,types,data_validation,splits}.py`
+* `ports/{secrets,clock,data,store}.py`
+* `adapters/secrets/*`, `adapters/store/{models,sqlite}.py`, `adapters/data/*`
+* `migrations/`, `container.py`, `cli/{__init__,doctor,data}.py`
 
 Every other directory in the tree is reserved for its phase and is intentionally
 empty until then.
+
+### Data flow
+
+```
+data.binance.vision  --zip+CHECKSUM-->  data/raw/...            (verified, immutable)
+                                            |  parse_kline_bytes
+ccxt fetch_ohlcv  --closed bars only-->     |
+                                            v
+                                     normalise_bars            (sort, de-dup, gap-fill)
+                                            |
+                                            v
+                        data/<exchange>/<SYMBOL>/<tf>/year=YYYY/bars.parquet
+                                     + manifest.json -> dataset_id
+                                            |  ParquetBarStore.load (hash-verified)
+                                            v
+                                       PartitionGuard          (INV-5)
+                                            |
+                                            v
+                                        BarFrame -> BarWindow  (INV-3)
+```

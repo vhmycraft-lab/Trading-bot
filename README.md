@@ -15,7 +15,7 @@ survivors in **paper trading**.
 
 ## Status
 
-Phase 1 (foundation) is complete. The repository currently provides:
+Phases 1 (foundation) and 2 (historical market data) are complete.
 
 | Area | Module | State |
 |---|---|---|
@@ -25,7 +25,13 @@ Phase 1 (foundation) is complete. The repository currently provides:
 | Logging + redaction | `quantlab.core.logging` | complete (spec §17) |
 | Secrets port + adapters | `quantlab.ports.secrets`, `quantlab.adapters.secrets` | complete (spec §21.1) |
 | Database schema + migrations | `quantlab.adapters.store`, `migrations/` | complete (spec §6) |
-| CLI skeleton | `quantlab.cli` (`version`, `doctor`, `config`, `db`) | complete |
+| Core types, `BarFrame`, `BarWindow` | `quantlab.core.types` | complete (spec §7.2, §8.1) |
+| Bar validation and gap handling | `quantlab.core.data_validation` | complete (spec §7.3) |
+| Splits, embargo, walk-forward windows | `quantlab.core.splits` | complete (spec §5, §15.1) |
+| Archive ingestion + Parquet store | `quantlab.adapters.data.binance_archive` | complete (spec §7.1, §7.2) |
+| REST tail updates | `quantlab.adapters.data.ccxt_rest` | complete (spec §7.1) |
+| Partition guard (INV-5) | `quantlab.adapters.data.guard` | complete (spec §7.4) |
+| CLI | `quantlab.cli` (`version`, `doctor`, `config`, `db`, `data`) | complete |
 
 Not implemented yet, by design: the backtest engine, indicators, metrics,
 sandbox, optimiser, validation suite, LLM researcher and paper-trading runtime.
@@ -86,6 +92,12 @@ uv run quantlab --help
 | `quantlab config hash` | Print the `config_hash` stored with every experiment |
 | `quantlab db upgrade` | Apply Alembic migrations to `project.db_path` |
 | `quantlab db info` | Show the database path, size and migration revision |
+| `quantlab data pull` | Download Binance monthly archives and build the dataset |
+| `quantlab data update` | Extend the dataset to the latest closed bar via ccxt |
+| `quantlab data validate` | Re-validate the stored dataset: hashes, order, gaps |
+| `quantlab data info` | Print the manifest and the `dataset_id` |
+| `quantlab data splits` | Print the split policy and its walk-forward windows |
+| `quantlab data range` | Load a range and show what the backtester receives |
 
 Global options accepted by every command:
 
@@ -97,6 +109,54 @@ quantlab --config configs/experiment.yaml --set optimize.n_trials=50 config show
 * `--set section.key=value` — a single scalar override; repeatable and logged.
 * Environment variables `QUANTLAB__<SECTION>__<KEY>` override everything else,
   e.g. `QUANTLAB__LOGGING__LEVEL=DEBUG`.
+
+---
+
+## Market data
+
+```bash
+# 1. Fetch history (verifies every archive's published SHA-256)
+uv run quantlab data pull --symbol BTC/USDT --tf 1h --from 2017-08
+
+# 2. Top up to the latest closed bar
+uv run quantlab data update
+
+# 3. Check what you have
+uv run quantlab data info
+uv run quantlab data validate
+uv run quantlab data splits --windows
+```
+
+**Raw and processed data are kept apart**, and only the processed side is ever
+loaded for a backtest:
+
+```
+data/raw/binance/BTCUSDT/1h/*.zip          downloaded archives, verified, never edited
+data/binance/BTCUSDT/1h/year=YYYY/*.parquet processed: canonical, validated, hashed
+data/binance/BTCUSDT/1h/manifest.json       file hashes + the dataset_id
+```
+
+The canonical bar schema is `ts_open` (int64 ms UTC, bar **open** time,
+left-labelled), `open/high/low/close/volume/quote_volume` (float64), `trades`
+(int64) and `is_gap_filled` (bool). Ingestion sorts, de-duplicates and validates
+every source identically; runs of up to three missing bars are filled flat and
+flagged, longer gaps are refused unless you pass `--allow-gaps`. Every Parquet
+file's hash is checked against the manifest before it is read, so an edited byte
+fails the run instead of quietly changing a backtest.
+
+### Two guarantees against using future data
+
+**Within a run — no look-ahead (INV-3).** A strategy deciding at bar `i` is
+handed a `BarWindow` over `bars[0..i]`. Every accessor stops at `i`; reading
+further raises `LookaheadError` rather than returning a number, so the failure is
+loud instead of showing up as a suspiciously good equity curve.
+
+**Across runs — no peeking at the held-out data (INV-5).** `build_container`
+wraps the data source in a `PartitionGuard` for every profile except `lockbox`.
+Ask for a range that reaches the test partition and you get a `LockboxViolation`,
+not a shorter result — silently clipping would turn a bug into a wrong backtest.
+Even the *extent* of the held-out data stays hidden: `available_range` is clipped
+below the test start.
 
 ---
 
