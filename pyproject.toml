@@ -40,6 +40,11 @@ packages = ["src/quantlab"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# Ruff formats Python blocks embedded in Markdown. The specification and the
+# design docs use compact illustrative signatures (`bar_index: int; side: Side`)
+# that are documentation, not source; reflowing them to source style makes them
+# markedly longer and harder to scan. Prose is reviewed by reading it.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = [

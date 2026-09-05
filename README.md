@@ -34,7 +34,23 @@ Phases 1 (foundation) and 2 (historical market data) are complete.
 | CLI | `quantlab.cli` (`version`, `doctor`, `config`, `db`, `data`) | complete |
 
 Not implemented yet, by design: the backtest engine, indicators, metrics,
-sandbox, optimiser, validation suite, LLM researcher and paper-trading runtime.
+sandbox, evolutionary optimiser, validation suite, LLM proposer and
+paper-trading runtime.
+
+### How strategies are searched
+
+The optimiser is a **population-based evolutionary strategy**, specified in
+spec §13 and `docs/EVOLUTION.md` and landing in phase F′. Each generation
+evaluates 16 candidates on training data only, scores them with a gated
+multi-objective fitness (net profit carries a weight of 0.02; win rate cannot
+override negative expectancy or excessive drawdown, because both are hard gates),
+keeps the strongest 12 subject to a diversity constraint, and refills the
+population by mutation plus at least one novel candidate.
+
+Every candidate evaluation counts as a trial against the deflated Sharpe ratio,
+so a wider search must clear a higher significance bar. Full lineage — parent,
+generation, and every mutation with the seed that drew it — is persisted and
+replayable.
 
 ---
 
@@ -257,8 +273,9 @@ Coverage gates (enforced by `scripts/check_coverage.py`): `core/`, `sandbox/`,
 
 ## Documentation
 
-* `CLAUDE_CODE_MASTER_SPEC.md` — the normative specification
+* `CLAUDE_CODE_MASTER_SPEC.md` — the normative specification (v1.1)
 * `docs/ARCHITECTURE.md` — layers, ports and the composition root
+* `docs/EVOLUTION.md` — evolutionary optimiser design notes (non-normative)
 * `docs/SECURITY.md` — secrets, sandboxing, supply chain, repo hygiene
 * `docs/DECISIONS/` — architecture decision records
 

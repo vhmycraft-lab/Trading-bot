@@ -9,7 +9,7 @@ must be updated in the same commit as any structural change.
 cli/ (Typer)  ──►  container.py (composition root)
                       │ builds
                       ▼
- orchestration: research/  optimize/  walkforward/  paper/  reporting/
+ orchestration: research/  optimize/  evolution/  walkforward/  paper/  reporting/
                       │ depend only on
                       ▼
  ports/  : BacktestEngine · LLMProvider · MarketDataSource · MarketDataFeed ·
@@ -20,8 +20,8 @@ cli/ (Typer)  ──►  container.py (composition root)
             broker/paper · store/{sqlite,artifacts} · secrets/{keychain,dotenv}
                       │ all of the above use
                       ▼
- core/   : types · config · strategy · indicators · costs · metrics · splits ·
-           validation/ · hashing · errors
+ core/   : types · config · strategy · genome · indicators · costs · metrics ·
+           splits · fitness · validation/ · hashing · errors
  sandbox/: ast_check · runner (child-process execution of strategies)
 ```
 
@@ -60,7 +60,7 @@ replace a component, add an adapter and one branch in `build_container`.
 | `core` | `core` only |
 | `ports` | `core` |
 | `adapters/*` | `core`, `ports` |
-| `research`, `optimize`, `walkforward`, `paper`, `reporting`, `experiments`, `strategies_io` | `core`, `ports` |
+| `research`, `optimize`, `evolution`, `walkforward`, `paper`, `reporting`, `experiments`, `strategies_io` | `core`, `ports` |
 | `container.py`, `cli/`, `tests/` | everything |
 
 ## Determinism rules
@@ -73,21 +73,57 @@ replace a component, add an adapter and one branch in `build_container`.
 * A run's identity is the full set of its inputs (§11.2), so an identical
   request hits the cache and any changed input produces a new run.
 
-## Two independent guards against future data
+## The search: evolutionary optimisation
+
+*Specified in spec §13 and `docs/EVOLUTION.md`; implemented in phase F′ (T45-T54).*
+
+The primary search is a population-based evolutionary strategy, not a sequential
+propose-backtest-modify loop. Each generation evaluates 16 candidates on the
+**training** segment, scores them with a gated multi-objective fitness, keeps the
+strongest 12 subject to a diversity constraint, and refills the population with
+mutations of survivors plus at least one novel candidate.
+
+```
+core/genome.py        declarative, validated strategy structure
+core/fitness.py       gates -> weighted components -> multiplicative penalties
+evolution/compiler.py genome -> module source (deterministic, never executes)
+evolution/mutation.py typed parameter and structural operators
+evolution/diversity.py similarity (structural + behavioural) and niching
+evolution/population.py ranking, survival, next-generation assembly
+evolution/lineage.py  parent -> child reconstruction and replay
+evolution/loop.py     the generation loop
+```
+
+Three properties this layer must hold, each with its own invariant:
+
+| | rule | invariant |
+|---|---|---|
+| Segment discipline | evolution reads train only; validation only via a recorded promotion; test never | INV-9 |
+| Replayable lineage | re-applying a child's stored mutations to its parent reproduces it exactly | INV-10 |
+| Prompt hygiene | no validation- or test-derived value enters an LLM prompt during a run | INV-11 |
+
+Two design choices carry most of the weight. **Mutation operates on a genome, not
+on Python source**, so a mutated candidate is valid by construction rather than by
+filtering. And **the size of the search is counted**: `evolution_run.n_evaluations`
+feeds `M` in the deflated Sharpe ratio (§14.4), so a wider search must clear a
+higher significance bar. Without that second property the optimiser would be a
+machine for manufacturing plausible overfits.
+
+## Three independent guards against future data
 
 The platform separates two failure modes that are often conflated.
 
-| | Within one run | Across the research programme |
-|---|---|---|
-| Failure | a strategy reads bar `t+1` at bar `t` | a researcher tunes against the held-out test set |
-| Guard | `BarWindow` (`core/types.py`) | `PartitionGuard` (`adapters/data/guard.py`) |
-| Invariant | INV-3 | INV-5 |
-| Behaviour | every accessor stops at `i`; reading further raises `LookaheadError` | any range intersecting `[test_start_ts, ∞)` raises `LockboxViolation` |
-| Attached by | the engine, which constructs the window | `build_container`, for every profile except `lockbox` |
+| | Within one run | Within the search | Across the programme |
+|---|---|---|---|
+| Failure | a strategy reads bar `t+1` at bar `t` | the optimiser tunes against the validation segment | a researcher tunes against the held-out test set |
+| Guard | `BarWindow` (`core/types.py`) | segment discipline + promotion (`evolution/loop.py`) | `PartitionGuard` (`adapters/data/guard.py`) |
+| Invariant | INV-3 | INV-9 / INV-11 | INV-5 |
+| Behaviour | every accessor stops at `i`; reading further raises `LookaheadError` | fitness reads train and inner folds only; validation only via a recorded, budgeted promotion | any range intersecting `[test_start_ts, ∞)` raises `LockboxViolation` |
+| Attached by | the engine, which constructs the window | the evolution loop's segment assertion | `build_container`, for every profile except `lockbox` |
 
-Neither guard clips or truncates. Returning less data than was asked for would
+No guard clips or truncates. Returning less data than was asked for would
 convert a programming error into a subtly wrong backtest, which is precisely the
-outcome both guards exist to prevent.
+outcome they exist to prevent.
 
 ## Current state (Phases 1-2)
 
