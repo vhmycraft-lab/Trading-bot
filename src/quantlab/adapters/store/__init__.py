@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from quantlab.adapters.store.artifacts import ARTIFACT_PARQUET_KWARGS, FileArtifactStore
 from quantlab.adapters.store.models import MUTABLE_COLUMNS, TABLE_NAMES, Base
 from quantlab.adapters.store.sqlite import (
+    SqliteExperimentStore,
     connection_url,
     create_db_engine,
     current_revision,
+    enforce_append_only,
+    install_append_only_guard,
     make_session_factory,
     migrations_dir,
     missing_tables,
@@ -15,12 +19,17 @@ from quantlab.adapters.store.sqlite import (
 )
 
 __all__ = [
+    "ARTIFACT_PARQUET_KWARGS",
     "MUTABLE_COLUMNS",
     "TABLE_NAMES",
     "Base",
+    "FileArtifactStore",
+    "SqliteExperimentStore",
     "connection_url",
     "create_db_engine",
     "current_revision",
+    "enforce_append_only",
+    "install_append_only_guard",
     "make_session_factory",
     "migrations_dir",
     "missing_tables",

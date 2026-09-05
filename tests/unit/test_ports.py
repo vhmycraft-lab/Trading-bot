@@ -9,7 +9,7 @@ the swap-an-adapter promise of spec section 2.3 quietly stops being true.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -114,6 +114,13 @@ class StubDataset:
 
 
 class StubExperimentStore:
+    """A store that does nothing, to prove the port is satisfiable without SQL.
+
+    It carries every method the protocol declares. When the port grows, this
+    fails to satisfy it until it grows too — which is the point: the protocol is
+    only a contract if something independent of the adapter can meet it.
+    """
+
     def get_or_create_dataset(self, **_kwargs: Any) -> StubDataset:
         return StubDataset()
 
@@ -122,6 +129,48 @@ class StubExperimentStore:
 
     def freeze_test_end(self, split_id: str, end_ts: int) -> SplitPolicy:
         return parse_split_policy(POLICY).freeze_test_end(end_ts)
+
+    def create_family(self, **_kwargs: Any) -> Any:
+        return None
+
+    def add_strategy_version(self, **_kwargs: Any) -> Any:
+        return None
+
+    def lineage(self, strategy_id: str) -> list[Any]:
+        return []
+
+    def increment_validation_touches(self, family_id: str) -> int:
+        return 0
+
+    def set_family_status(self, family_id: str, status: str) -> Any:
+        return None
+
+    def create_experiment(self, **_kwargs: Any) -> Any:
+        return None
+
+    def find_run(self, run_id: str) -> Any:
+        return None
+
+    def create_run(self, **_kwargs: Any) -> Any:
+        return None
+
+    def finish_run(self, run_id: str, status: str, *_args: Any, **_kwargs: Any) -> Any:
+        return None
+
+    def query_runs(self, **_filters: Any) -> list[Any]:
+        return []
+
+    def delete_run(self, run_id: str, *, confirm: Literal[True]) -> None:
+        return None
+
+    def save_verdict(self, **_kwargs: Any) -> Any:
+        return None
+
+    def record_llm_interaction(self, **_fields: Any) -> Any:
+        return None
+
+    def record_lockbox_access(self, **_kwargs: Any) -> Any:
+        return None
 
 
 class StubArtifactStore:

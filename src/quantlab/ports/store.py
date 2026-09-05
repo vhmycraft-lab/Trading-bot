@@ -1,22 +1,37 @@
 """Persistence ports (master spec section 11.1).
 
-Only the dataset and split methods are declared so far: they are the ones the
-data subsystem needs, and their record types exist.  The run, metric, verdict
-and LLM methods of spec section 11.1 join this protocol in the store phase,
-once the types they carry are defined.  Growing a ``Protocol`` is safe —
-adapters satisfy it structurally, so nothing needs to be rewritten.
+The record types are declared structurally rather than imported from the store
+adapter: a caller needs to read a run's status and a strategy's parentage, and
+nothing more. Declaring only that keeps ``core`` and every consumer free of
+SQLAlchemy, so the store could be replaced without touching them (INV-8).
+
+The evolution methods of section 11.1 (`create_evolution_run`, `add_candidate`,
+`add_mutations`, `record_promotion`, `ancestry`, ...) join this protocol with the
+tables they carry, in migration 0002. Growing a ``Protocol`` is safe: adapters
+satisfy it structurally, so nothing already written needs to change.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import pandas as pd
 
 from quantlab.core.splits import SplitPolicy
+from quantlab.core.types import Trade
 
-__all__ = ["ArtifactStore", "DatasetRecord", "ExperimentStore"]
+__all__ = [
+    "ArtifactStore",
+    "DatasetRecord",
+    "ExperimentRecord",
+    "ExperimentStore",
+    "FamilyRecord",
+    "RunRecord",
+    "StrategyVersionRecord",
+    "VerdictRecord",
+]
 
 
 @runtime_checkable
@@ -33,9 +48,74 @@ class DatasetRecord(Protocol):
 
 
 @runtime_checkable
-class ExperimentStore(Protocol):
-    """Append-only record of everything an experiment depended on."""
+class FamilyRecord(Protocol):
+    """A line of enquiry, and how much of the validation budget it has spent."""
 
+    family_id: str
+    name: str
+    origin: str
+    status: str
+    validation_touches: int
+
+
+@runtime_checkable
+class StrategyVersionRecord(Protocol):
+    """One immutable version of a strategy's source."""
+
+    strategy_id: str
+    family_id: str
+    parent_strategy_id: str | None
+    code_sha256: str
+    style: str
+    logic_lines: int
+
+
+@runtime_checkable
+class ExperimentRecord(Protocol):
+    """One campaign, one purpose, one configuration."""
+
+    experiment_id: str
+    campaign: str
+    purpose: str
+    config_hash: str
+    seed: int
+
+
+@runtime_checkable
+class RunRecord(Protocol):
+    """One evaluation of one strategy on one segment."""
+
+    run_id: str
+    experiment_id: str
+    strategy_id: str
+    dataset_id: str
+    split_id: str
+    segment: str
+    status: str
+    artifact_dir: str
+
+
+@runtime_checkable
+class VerdictRecord(Protocol):
+    """What validation decided, and the thresholds it decided against."""
+
+    verdict_id: str
+    strategy_id: str
+    split_id: str
+    verdict: str
+    overfit_score: float
+
+
+@runtime_checkable
+class ExperimentStore(Protocol):
+    """Append-only record of everything an experiment depended on.
+
+    Rows are append-only except for the columns spec section 6 names as mutable;
+    an update outside those raises ``ImmutableRowError``. The single exception is
+    :meth:`delete_run`, which removes a *failed* run and logs at WARNING.
+    """
+
+    # -- datasets and splits ------------------------------------------------
     def get_or_create_dataset(
         self,
         *,
@@ -57,6 +137,134 @@ class ExperimentStore(Protocol):
 
     def freeze_test_end(self, split_id: str, end_ts: int) -> SplitPolicy:
         """Pin a split's open test end the first time the lockbox is used."""
+        ...
+
+    # -- strategies ---------------------------------------------------------
+    def create_family(
+        self, *, name: str, origin: str, description: str = ..., family_id: str | None = ...
+    ) -> FamilyRecord:
+        """Register a strategy family."""
+        ...
+
+    def add_strategy_version(
+        self,
+        *,
+        strategy_id: str,
+        family_id: str,
+        code_path: str,
+        code_sha256: str,
+        class_name: str,
+        param_schema_json: str,
+        style: str,
+        author: str,
+        logic_lines: int,
+        parent_strategy_id: str | None = ...,
+        llm_interaction_id: str | None = ...,
+    ) -> StrategyVersionRecord:
+        """Record one immutable version of a strategy's source."""
+        ...
+
+    def lineage(self, strategy_id: str) -> list[StrategyVersionRecord]:
+        """Every ancestor of ``strategy_id``, oldest first, ending with itself."""
+        ...
+
+    def increment_validation_touches(self, family_id: str) -> int:
+        """Count one more look at the validation partition; return the new total."""
+        ...
+
+    def set_family_status(self, family_id: str, status: str) -> FamilyRecord:
+        """Open, freeze or close a family."""
+        ...
+
+    # -- experiments and runs ----------------------------------------------
+    def create_experiment(
+        self,
+        *,
+        campaign: str,
+        purpose: str,
+        config_hash: str,
+        config_json: str,
+        seed: int,
+        git_commit: str,
+        experiment_id: str | None = ...,
+    ) -> ExperimentRecord:
+        """Register an experiment."""
+        ...
+
+    def find_run(self, run_id: str) -> RunRecord | None:
+        """The run with this id, or ``None``.  The cache lookup of section 11.2."""
+        ...
+
+    def create_run(
+        self,
+        *,
+        run_id: str,
+        experiment_id: str,
+        strategy_id: str,
+        dataset_id: str,
+        split_id: str,
+        segment: str,
+        params_json: str,
+        engine_name: str,
+        engine_version: str,
+        artifact_dir: str,
+        cost_multiplier: float = ...,
+    ) -> RunRecord:
+        """Open a run in ``pending``.  ``run_id`` is the caller's, per section 11.2."""
+        ...
+
+    def finish_run(
+        self,
+        run_id: str,
+        status: str,
+        metrics: Mapping[str, float | None] | None = ...,
+        trades: Sequence[Trade] | None = ...,
+        error: Mapping[str, Any] | None = ...,
+    ) -> RunRecord:
+        """Close a run and write everything it produced, in one transaction."""
+        ...
+
+    def query_runs(self, **filters: Any) -> list[RunRecord]:
+        """Runs matching every supplied filter, oldest first."""
+        ...
+
+    def delete_run(self, run_id: str, *, confirm: Literal[True]) -> None:
+        """Remove a *failed* run and its results.  Logs at WARNING (section 6)."""
+        ...
+
+    # -- verdicts, LLM calls, lockbox --------------------------------------
+    def save_verdict(
+        self,
+        *,
+        strategy_id: str,
+        split_id: str,
+        params_json: str,
+        verdict: str,
+        overfit_score: float,
+        hard_gates_json: str,
+        soft_checks_json: str,
+        thresholds_json: str,
+        n_trials_accounted: int,
+        verdict_id: str | None = ...,
+    ) -> VerdictRecord:
+        """Record a validation verdict, with the thresholds it was decided against."""
+        ...
+
+    def record_llm_interaction(self, **fields: Any) -> Any:
+        """Record that a model was asked something, and what it cost."""
+        ...
+
+    def record_lockbox_access(
+        self,
+        *,
+        strategy_id: str,
+        family_id: str,
+        os_user: str,
+        reason: str,
+        run_id: str | None = ...,
+        access_id: str | None = ...,
+    ) -> Any:
+        """Record a look at the test partition, whether or not it passed."""
         ...
 
 

@@ -1,13 +1,14 @@
 # CLAUDE_CODE_MASTER_SPEC.md
 
 **Project:** QuantLab — AI-assisted quantitative trading *research and paper-trading* platform
-**Spec version:** 1.1.5 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
+**Spec version:** 1.1.6 (2026-09-05) · **Companion documents:** `QuantLab_Implementation_Plan.md` (rationale), `docs/EVOLUTION.md` (evolutionary optimiser rationale, non-normative). This file is normative; where any two disagree, this file wins.
 
 **Change log**
 
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.1.6 | §6 clarified while implementing the store: `split_policy.wf_json` holds the **canonical policy document** the split was built from. The column had no stated contents, and the row otherwise cannot reproduce the policy it came from — the schema has no `symbol`/`timeframe`/source columns, and `split_id` is a hash of that document, so a policy rebuilt without it would not hash to its own primary key. Walk-forward windows are a function of the document plus configuration (§7.3) and are still derived, not stored. |
 | 1.1.5 | §21.3 made precise while implementing the sandbox: the child runs the **engine** as well as the strategy — a `bar_loop` strategy is handed live engine state on every bar, so the two cannot be split across processes — and the engine's name therefore travels in the request, since the sandbox layer may not import an adapter (INV-8). The name is constrained to `quantlab.adapters.engine.*` and re-checked at the point of use. §19's "child never imports `quantlab.adapters`" is amended accordingly: no adapter *other than the named engine*. See ADR `docs/DECISIONS/0004`. |
 | 1.1.4 | §9.2 made precise while implementing the AST checker: every rule now has a stable machine-readable **violation code**, the checker reports *all* violations at once rather than the first, and the hand-rolled-stop rule of §9.1 is stated as a rejection (`E_INTRABAR_STOP`) with its false-positive boundary defined — only a `high`/`low` comparison that also mentions an entry price is refused. |
 | 1.1.3 | Addition found while implementing the engine: new §8.7 **Ruin**. Equity reaching zero now liquidates the account and stops trading, instead of continuing to trade a negative balance. |
@@ -614,6 +615,9 @@ CREATE TABLE split_policy (
   val_start_ts   INTEGER NOT NULL, val_end_ts INTEGER NOT NULL,
   test_start_ts  INTEGER NOT NULL, test_end_ts INTEGER,          -- NULL until frozen
   embargo_bars   INTEGER NOT NULL, wf_json TEXT NOT NULL, created_at INTEGER NOT NULL
+                 -- wf_json: the canonical policy document this split was built
+                 -- from; split_id is its hash, so the row can reproduce the
+                 -- policy and still hash to its own key (clarified in 1.1.6)
 ) STRICT;
 
 CREATE TABLE strategy_family (
@@ -2048,7 +2052,7 @@ authoritative map; the phase sections that follow carry the detail.
 | T18 | AMENDED — **done** | `sandbox/{protocol,guards,runner,child_main}.py`; the child runs the engine, named in the request and constrained to `quantlab.adapters.engine.*` (ADR 0004) |
 | T19 | unchanged | — |
 | T20 | AMENDED | loader handles `kind='genome'`, storing `genome_json` alongside the compiled source |
-| T21 | AMENDED | migration `0002` adds the five evolution tables; store port gains the evolution methods |
+| T21 | AMENDED — **done for the 13 base tables** | `adapters/store/{models,sqlite,artifacts}.py`, Alembic `0001`, `ports/store.py` grown to §11.1. **Remaining:** migration `0002` for the five evolution tables and the evolution methods on the store port |
 | T22–T23 | unchanged | — |
 | T24 | SUPERSEDED by T47/T51 | Optuna demoted to refinement (§13.8); objectives retained |
 | T25 | AMENDED | plateau selection becomes **mandatory** before validation |
