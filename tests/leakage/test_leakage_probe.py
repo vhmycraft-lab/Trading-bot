@@ -217,8 +217,8 @@ def test_real_divergences_are_classified_by_where_they_fall(bars: BarFrame) -> N
 # ---------------------------------------------------------------------------
 def test_cut_points_are_the_five_the_spec_names(bars: BarFrame) -> None:
     assert DEFAULT_CUT_FRACTIONS == (0.20, 0.35, 0.50, 0.65, 0.80)
-    assert default_cut_points(400) == (80, 140, 200, 260, 320)
-    assert default_cut_points(400) == default_cut_points(400)
+    assert default_cut_points(800) == (160, 280, 400, 520, 640)
+    assert default_cut_points(800) == default_cut_points(800)
 
 
 def test_cut_points_stay_inside_the_segment() -> None:
@@ -345,3 +345,38 @@ def test_a_leakage_verdict_lists_its_divergences(bars: BarFrame) -> None:
     assert text.count("\n") <= 6
     assert "and" in text and "more" in text
     assert str(result.divergences[0]) in text
+
+
+def test_a_segment_that_does_not_clear_warmup_is_refused(bars: BarFrame) -> None:
+    """The probe must not pass on bars where no strategy was ever consulted.
+
+    ``SimpleBarEngine`` holds every strategy FLAT before ``warmup_bars``
+    (section 8.4), so two runs agree there whatever the strategy does. A probe
+    that reported "causal" from that agreement would be reporting a verdict it
+    never reached — the most dangerous kind of green, because it looks exactly
+    like the real one.
+    """
+    strategy = load_strategy(HONEST_DIR / "momentum_vectorized.py")
+    engine = SimpleBarEngine()
+    with pytest.raises(ValidationError_, match="does not clear the strategy's warm-up"):
+        truncation_probe(
+            strategy,
+            bars.head(120),
+            default_params(strategy),
+            engine=engine,
+            cut_points=(30,),
+        )
+
+
+def test_a_long_warmup_baseline_is_probed_on_bars_that_reach_past_it(
+    bars: BarFrame,
+) -> None:
+    """``sma_cross`` declares 400 bars of warm-up, so 400 bars of data prove
+    nothing about it. The suite uses 800 for exactly this reason."""
+    strategy = load_strategy(BASELINES / "sma_cross.py")
+    assert strategy.warmup_bars == 400
+    assert bars.n_bars > strategy.warmup_bars * 1.25
+    result = _probe(BASELINES / "sma_cross.py", bars)
+    assert result.passed
+    assert max(result.cut_points) > strategy.warmup_bars
+    assert result.tail_start > strategy.warmup_bars

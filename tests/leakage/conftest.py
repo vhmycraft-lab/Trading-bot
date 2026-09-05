@@ -20,8 +20,13 @@ BASELINES: Final[Path] = Path(__file__).resolve().parents[2] / "strategies" / "b
 #: shape with both trend and mean reversion so a strategy has something to react
 #: to. A probe whose result depended on the day's random draw would be useless as
 #: a gate.
+#:
+#: 800 bars, not 400: ``sma_cross`` declares ``warmup_bars = 400``, and a segment
+#: that does not clear a strategy's warm-up makes the probe compare bars on which
+#: no strategy was ever consulted. At 400 bars that test passed for the wrong
+#: reason; the probe now refuses such a segment outright.
 BAR_SEED: Final[int] = 7
-N_BARS: Final[int] = 400
+N_BARS: Final[int] = 800
 
 
 def make_bars(n: int = N_BARS, seed: int = BAR_SEED) -> BarFrame:

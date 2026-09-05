@@ -136,6 +136,9 @@ class StubExperimentStore:
     def add_strategy_version(self, **_kwargs: Any) -> Any:
         return None
 
+    def get_strategy_version(self, strategy_id: str) -> Any:
+        return None
+
     def lineage(self, strategy_id: str) -> list[Any]:
         return []
 

@@ -19,23 +19,29 @@ the checker already did, because running a module to find out whether it is safe
 to run is the thing INV-4 exists to prevent. Execution happens later, in the
 sandbox child (§21.3).
 
-**Vectorised strategies are refused.** §9.1 requires the truncation probe of §14.2
-to run automatically here before any backtest, and that probe (T19) is not
-implemented. Loading one anyway would mean asserting a guarantee nothing checks,
-so the loader fails closed and says exactly what is missing. :func:`_probe_vectorized`
-is the single place the real probe replaces.
+**Vectorised strategies are probed here.** §9.1 requires the truncation probe of
+§14.2 to run automatically at load, before any backtest, because a vectorised
+strategy is handed the whole segment and nothing structural stops it reading
+forward. The probe evaluates the strategy nine times — through the sandbox, never
+in this process — and a strategy that changed its mind about the past is refused
+outright (§18.1: a hard reject, there is nothing to fall back to). ``bar_loop``
+strategies are not probed at load: ``BarWindow`` refuses a future bar by
+construction (INV-3), so there is nothing an empirical check could add.
 """
 
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from quantlab.core.errors import StoreError, StrategyLoadError
+from quantlab.core.errors import StrategyLoadError
 from quantlab.core.hashing import canonical_json, sha256_hex
 from quantlab.core.hashing import strategy_id as compute_strategy_id
+from quantlab.core.types import BarFrame
+from quantlab.core.validation.leakage import ProbeResult, probe_evaluations, require_causal
 from quantlab.ports.store import ExperimentStore, SourceStore, StrategyVersionRecord
 from quantlab.sandbox.ast_check import (
     DEFAULT_ALLOWED_IMPORTS,
@@ -45,18 +51,21 @@ from quantlab.sandbox.ast_check import (
     AstReport,
     require_safe_source,
 )
+from quantlab.sandbox.runner import SandboxRunner
+from quantlab.strategies_io.probe import sandbox_evaluator
 
 __all__ = [
+    "PROBE_REQUIRED_STYLES",
     "SUPPORTED_STYLES",
     "LoadedStrategy",
     "StrategyLoader",
 ]
 
-#: Styles this build can load. ``vectorized`` is declared by §9.1 but cannot be
-#: admitted until the truncation probe of §14.2 exists (T19).
-SUPPORTED_STYLES: Final[frozenset[str]] = frozenset({"bar_loop"})
+#: Styles the engine knows how to consume (spec section 9.1).
+SUPPORTED_STYLES: Final[frozenset[str]] = frozenset({"bar_loop", "vectorized"})
 
-_PROBE_REQUIRED_STYLES: Final[frozenset[str]] = frozenset({"vectorized"})
+#: Styles that must clear the truncation probe before any backtest (section 9.1).
+PROBE_REQUIRED_STYLES: Final[frozenset[str]] = frozenset({"vectorized"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,39 +88,13 @@ class LoadedStrategy:
     source: str
     parent_strategy_id: str | None = None
     author: str = "human"
+    #: The section 14.2 verdict, for a style that requires one. ``None`` for
+    #: ``bar_loop``, which ``BarWindow`` protects structurally and never probes.
+    probe: ProbeResult | None = None
 
     @property
     def n_params(self) -> int:
         return len(self.param_schema)
-
-
-def _probe_vectorized(style: str) -> None:
-    """Run the truncation probe a vectorized strategy must pass before any backtest.
-
-    §9.1: *"Vectorized strategies MUST pass the truncation probe (§14.2) before any
-    backtest; the probe is executed automatically by the loader."*
-
-    The probe is T19 and does not exist yet, so this refuses instead. That is the
-    only honest option: a vectorized strategy computes its signals over the whole
-    segment and the engine shifts them by one bar, which is precisely the shape
-    that hides look-ahead, and the probe is what would catch it. Loading one now
-    would record a guarantee nothing checked.
-
-    When T19 lands, the body of this function becomes the call to
-    ``truncation_probe`` and the refusal disappears; nothing else in the loader
-    changes.
-
-    Raises:
-        StrategyLoadError: always, while T19 is unimplemented.
-    """
-    raise StrategyLoadError(
-        "vectorized strategies cannot be loaded: the truncation probe required by "
-        "spec section 9.1 before any backtest is not implemented yet (task T19). "
-        "Rewrite the strategy as style='bar_loop', or implement the probe.",
-        style=style,
-        required_by="spec 9.1 / 14.2",
-        blocked_on="T19",
-    )
 
 
 class StrategyLoader:
@@ -123,9 +106,14 @@ class StrategyLoader:
 
     __slots__ = (
         "allowed_imports",
+        "engine_class",
+        "engine_module",
         "max_lines",
         "max_logic_lines",
         "max_params",
+        "probe_bars",
+        "probe_cut_points",
+        "sandbox",
         "sources",
         "store",
     )
@@ -139,6 +127,11 @@ class StrategyLoader:
         max_params: int = DEFAULT_MAX_PARAMS,
         max_lines: int = MAX_SOURCE_LINES,
         max_logic_lines: int = DEFAULT_MAX_LOGIC_LINES,
+        sandbox: SandboxRunner | None = None,
+        engine_module: str = "",
+        engine_class: str = "",
+        probe_bars: BarFrame | None = None,
+        probe_cut_points: Sequence[int] | None = None,
     ) -> None:
         self.store = store
         self.sources = sources
@@ -146,6 +139,13 @@ class StrategyLoader:
         self.max_params = max_params
         self.max_lines = max_lines
         self.max_logic_lines = max_logic_lines
+        # Everything the section 14.2 probe needs. Absent, a vectorised strategy
+        # cannot be admitted -- see `_probe_if_required`.
+        self.sandbox = sandbox
+        self.engine_module = engine_module
+        self.engine_class = engine_class
+        self.probe_bars = probe_bars
+        self.probe_cut_points = None if probe_cut_points is None else tuple(probe_cut_points)
 
     def __repr__(self) -> str:
         return f"StrategyLoader(store={self.store!r}, sources={self.sources!r})"
@@ -214,6 +214,10 @@ class StrategyLoader:
         identifier = compute_strategy_id(source)
         code_sha256 = sha256_hex(source)
 
+        # Before the copy and the row: a strategy that fails the probe must leave
+        # nothing behind that a run could later cite (sections 9.1, 18.2).
+        probe = self._probe_if_required(source, style, report.warmup_bars, identifier)
+
         # Order matters on failure as much as on success: the copy lands before
         # the row, so a row can never point at source that was never written.
         code_path = self.sources.write_source(identifier, source)
@@ -244,6 +248,7 @@ class StrategyLoader:
             source=source,
             parent_strategy_id=parent_strategy_id,
             author=author,
+            probe=probe,
         )
 
     # -- reading back -------------------------------------------------------
@@ -298,6 +303,9 @@ class StrategyLoader:
             max_lines=self.max_lines,
             max_logic_lines=self.max_logic_lines,
         )
+        # Not re-probed: the probe ran when the version was registered, over bars
+        # this call has no reason to hold, and its verdict is a property of the
+        # source -- which `verify` has just proved is unchanged.
         style = self._require_supported_style(report)
         return LoadedStrategy(
             strategy_id=strategy_id,
@@ -322,8 +330,6 @@ class StrategyLoader:
     # -- internals ----------------------------------------------------------
     def _require_supported_style(self, report: AstReport) -> str:
         style = report.style
-        if style in _PROBE_REQUIRED_STYLES:
-            _probe_vectorized(style)
         if style not in SUPPORTED_STYLES:
             raise StrategyLoadError(
                 "unknown strategy style",
@@ -332,22 +338,65 @@ class StrategyLoader:
             )
         return style
 
-    def _require_version(self, strategy_id: str) -> StrategyVersionRecord:
-        """The registered row for ``strategy_id``.
+    def _probe_if_required(
+        self, source: str, style: str, warmup_bars: int, strategy_id: str
+    ) -> ProbeResult | None:
+        """Run the section 14.2 probe when the style needs one; refuse if it fails.
 
-        Read through ``lineage`` because that is what the port offers, and the
-        chain ends with the version itself. A store that has never heard of the id
-        is the loader's problem to report, not the store's: the caller asked to
-        load a strategy, so the answer is a ``StrategyLoadError``.
+        Configured, not optional: a loader asked to admit a vectorised strategy
+        without the bars, the sandbox and the engine the probe needs cannot check
+        it, and an unchecked vectorised strategy is exactly what section 9.1
+        forbids. The refusal names what is missing rather than quietly passing.
+
+        The evaluations run in the sandbox child, never here: at this point the
+        source has passed the AST check and nothing else, which is not enough to
+        run it in the process that decides what to trust (INV-4).
+
+        Raises:
+            StrategyLoadError: the probe is required but not configured, or an
+                evaluation failed.
+            LeakageDetected: the strategy is not causal.
         """
-        try:
-            chain = self.store.lineage(strategy_id)
-        except StoreError as exc:
-            raise StrategyLoadError("no such strategy version", strategy_id=strategy_id) from exc
-        for row in chain:
-            if row.strategy_id == strategy_id:
-                return row
-        raise StrategyLoadError("no such strategy version", strategy_id=strategy_id)
+        if style not in PROBE_REQUIRED_STYLES:
+            return None
+        missing = [
+            name
+            for name, value in (
+                ("sandbox", self.sandbox),
+                ("engine_module", self.engine_module),
+                ("engine_class", self.engine_class),
+                ("probe_bars", self.probe_bars),
+            )
+            if not value
+        ]
+        if missing or self.sandbox is None or self.probe_bars is None:
+            raise StrategyLoadError(
+                "a vectorized strategy must clear the truncation probe before any "
+                "backtest (spec 9.1), and this loader is not configured to run it",
+                style=style,
+                missing=missing,
+            )
+        evaluate = sandbox_evaluator(
+            self.sandbox,
+            source,
+            engine_module=self.engine_module,
+            engine_class=self.engine_class,
+        )
+        result = probe_evaluations(
+            evaluate,
+            self.probe_bars,
+            style=style,
+            warmup_bars=warmup_bars,
+            cut_points=self.probe_cut_points,
+        )
+        return require_causal(result, strategy_id=strategy_id)
+
+    def _require_version(self, strategy_id: str) -> StrategyVersionRecord:
+        """The registered row for ``strategy_id``, or a refusal naming it."""
+        row = self.store.get_strategy_version(strategy_id)
+        if row is None:
+            raise StrategyLoadError("no such strategy version", strategy_id=strategy_id)
+        return row
 
 
 # ---------------------------------------------------------------------------

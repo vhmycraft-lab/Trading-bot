@@ -343,6 +343,23 @@ def probe_evaluations(
                 "cut point outside the segment", cut_point=point, n_bars=bars.n_bars
             )
 
+    # A comparison that lies entirely inside warm-up compares nothing: the engine
+    # holds every strategy FLAT before ``warmup_bars`` (section 8.4), so two runs
+    # agree there whatever the strategy does. Passing on that basis would be the
+    # worst kind of green — a probe reporting a verdict it never reached — so the
+    # probe refuses instead. It needs at least one truncation and the tail
+    # replacement to land on bars the strategy was actually consulted about.
+    tail_preview = bars.n_bars - max(2, int(bars.n_bars * tail_fraction))
+    if warmup_bars >= max(points) or warmup_bars >= tail_preview:
+        raise ValidationError_(
+            "the segment does not clear the strategy's warm-up, so the probe would "
+            "compare bars on which no strategy is consulted",
+            n_bars=bars.n_bars,
+            warmup_bars=warmup_bars,
+            last_cut_point=max(points),
+            tail_start=tail_preview,
+        )
+
     lag = SIGNAL_LAG[style]
     full = evaluate(bars)
     evaluations = 1

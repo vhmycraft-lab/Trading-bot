@@ -15,16 +15,27 @@ import ast
 from pathlib import Path
 from typing import Any, Final
 
+import numpy as np
+import pandas as pd
 import pytest
 from sqlalchemy import Engine
 
 from quantlab.adapters.store.artifacts import FileSourceStore
 from quantlab.adapters.store.sqlite import SqliteExperimentStore, make_session_factory
-from quantlab.core.errors import StoreError, StrategyLoadError, StrategySafetyError
+from quantlab.core.errors import (
+    LeakageDetected,
+    StoreError,
+    StrategyLoadError,
+    StrategySafetyError,
+)
 from quantlab.core.hashing import sha256_hex, short_id
 from quantlab.core.hashing import strategy_id as canonical_strategy_id
+from quantlab.core.types import BarFrame
+from quantlab.core.validation.leakage import TAIL_MODES
 from quantlab.ports.store import SourceStore
-from quantlab.strategies_io import SUPPORTED_STYLES, LoadedStrategy, StrategyLoader
+from quantlab.sandbox.runner import SandboxRunner
+from quantlab.strategies_io import LoadedStrategy, StrategyLoader
+from quantlab.strategies_io.loader import PROBE_REQUIRED_STYLES, SUPPORTED_STYLES
 
 REPO: Final[Path] = Path(__file__).resolve().parents[2]
 FIXTURES: Final[Path] = REPO / "tests" / "fixtures" / "strategies"
@@ -32,7 +43,6 @@ BASELINES: Final[Path] = REPO / "strategies" / "baselines"
 
 SMA_CROSS: Final[str] = (BASELINES / "sma_cross.py").read_text(encoding="utf-8")
 BUY_AND_HOLD: Final[str] = (BASELINES / "buy_and_hold.py").read_text(encoding="utf-8")
-VECTORIZED: Final[str] = (FIXTURES / "valid" / "vectorized_valid.py").read_text(encoding="utf-8")
 
 
 @pytest.fixture
@@ -502,72 +512,164 @@ def test_the_allow_list_is_the_loaders_to_set(
 
 
 # ---------------------------------------------------------------------------
-# vectorized strategies: refused until T19 exists
+# vectorized strategies: probed at load (spec section 9.1, T19)
 # ---------------------------------------------------------------------------
-def test_a_vectorized_strategy_is_refused_because_the_probe_does_not_exist(
-    loader: StrategyLoader,
+HONEST_VECTORIZED: Final[str] = (FIXTURES / "honest" / "momentum_vectorized.py").read_text(
+    encoding="utf-8"
+)
+LEAKY_VECTORIZED: Final[str] = (FIXTURES / "leaky" / "centred_mean.py").read_text(encoding="utf-8")
+
+
+def _probe_bars(n: int = 200) -> BarFrame:
+    """Small but real.
+
+    Long enough to clear the longest warm-up any fixture declares (99 bars): below
+    that the engine holds every strategy FLAT and the probe compares two identical
+    rows of nothing, which passes for the wrong reason.
+    """
+    rng = np.random.default_rng(7)
+    close = 100.0 + rng.normal(0, 0.6, n).cumsum() + 6.0 * np.sin(np.arange(n) / 9.0)
+    return BarFrame(
+        pd.DataFrame(
+            {
+                "ts_open": (np.arange(n, dtype="int64") * 3_600_000),
+                "open": close,
+                "high": close + np.abs(rng.normal(0, 0.4, n)),
+                "low": close - np.abs(rng.normal(0, 0.4, n)),
+                "close": close,
+                "volume": np.full(n, 10.0),
+                "quote_volume": np.full(n, 1000.0),
+                "trades": np.full(n, 5, dtype="int64"),
+                "is_gap_filled": np.zeros(n, dtype=bool),
+            }
+        ),
+        symbol="BTCUSDT",
+        timeframe="1h",
+    )
+
+
+@pytest.fixture
+def probing_loader(store: SqliteExperimentStore, sources: FileSourceStore) -> StrategyLoader:
+    """A loader configured to actually run the probe, through the sandbox.
+
+    One cut point rather than five: the probe's own coverage of the five lives in
+    ``tests/leakage/``, and each evaluation here costs a child process.
+    """
+    return StrategyLoader(
+        store,
+        sources,
+        sandbox=SandboxRunner(),
+        engine_module="quantlab.adapters.engine.simple_bar",
+        engine_class="SimpleBarEngine",
+        probe_bars=_probe_bars(),
+        probe_cut_points=(100,),
+    )
+
+
+def test_vectorized_is_a_style_the_loader_admits() -> None:
+    assert frozenset({"bar_loop", "vectorized"}) == SUPPORTED_STYLES
+    assert frozenset({"vectorized"}) == PROBE_REQUIRED_STYLES
+
+
+@pytest.mark.slow
+def test_an_honest_vectorized_strategy_loads_and_records_its_verdict(
+    probing_loader: StrategyLoader,
 ) -> None:
-    """Section 9.1 requires the truncation probe of section 14.2 to run here before
-    any backtest. It is T19 and is not implemented, so loading one would record a
-    guarantee nothing checked."""
-    with pytest.raises(StrategyLoadError) as excinfo:
-        loader.load_source(VECTORIZED, family="vectorized")
-
-    message = str(excinfo.value)
-    assert "vectorized" in message
-    assert "T19" in message
-    assert "truncation probe" in message
+    loaded = probing_loader.load_source(HONEST_VECTORIZED, family="momentum")
+    assert loaded.style == "vectorized"
+    assert loaded.probe is not None
+    assert loaded.probe.passed
+    assert loaded.probe.n_evaluations == 1 + 1 + len(TAIL_MODES)
 
 
-def test_the_refusal_is_deterministic(loader: StrategyLoader) -> None:
-    messages = set()
-    for _ in range(3):
-        with pytest.raises(StrategyLoadError) as excinfo:
-            loader.load_source(VECTORIZED, family="vectorized")
-        messages.add(str(excinfo.value))
-    assert len(messages) == 1
-
-
-def test_a_refused_vectorized_strategy_is_not_registered_or_copied(
-    loader: StrategyLoader, sources: FileSourceStore
+@pytest.mark.slow
+def test_a_leaky_vectorized_strategy_is_refused_at_load(
+    probing_loader: StrategyLoader,
 ) -> None:
-    """Fail closed: the refusal happens before anything is written, so no row and
-    no file exist for a strategy this build cannot vouch for."""
-    with pytest.raises(StrategyLoadError):
-        loader.load_source(VECTORIZED, family="vectorized")
+    """Section 9.1: the probe runs *before any backtest*, automatically, here."""
+    with pytest.raises(LeakageDetected) as excinfo:
+        probing_loader.load_source(LEAKY_VECTORIZED, family="centred")
+    assert excinfo.value.probe.divergences
+    assert excinfo.value.context["strategy_id"] == canonical_strategy_id(LEAKY_VECTORIZED)
 
-    identifier = canonical_strategy_id(VECTORIZED)
+
+@pytest.mark.slow
+def test_a_leaky_vectorized_strategy_is_neither_registered_nor_copied(
+    probing_loader: StrategyLoader, sources: FileSourceStore
+) -> None:
+    """Fail closed: nothing a run could later cite may survive a failed probe."""
+    with pytest.raises(LeakageDetected):
+        probing_loader.load_source(LEAKY_VECTORIZED, family="centred")
+
+    identifier = canonical_strategy_id(LEAKY_VECTORIZED)
     assert not sources.exists(identifier)
     with pytest.raises(StrategyLoadError, match="no such strategy version"):
-        loader.verify(identifier)
+        probing_loader.verify(identifier)
 
 
-def test_the_refusal_is_not_a_silent_pass_or_a_stub_probe() -> None:
-    """The refusal must not be quietly convertible into a success.
+@pytest.mark.slow
+def test_the_probe_runs_in_the_sandbox_not_in_this_process(
+    probing_loader: StrategyLoader, tmp_path: Path
+) -> None:
+    """INV-4: the probe evaluates untrusted code nine times, and not one of those
+    evaluations happens here.
 
-    A stub that returned "probe passed" would satisfy every other test in this
-    file and leave the platform asserting causality it never checked.
+    The strategy is given a module-level side effect that would fire on import.
+    It is refused by the AST checker, so the probe never sees it — and the canary
+    proves the loader did not import it on the way to finding that out.
     """
-    source = (REPO / "src" / "quantlab" / "strategies_io" / "loader.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    probe = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_probe_vectorized"
+    canary = tmp_path / "canary.txt"
+    hostile = HONEST_VECTORIZED.replace(
+        "STRATEGY = MomentumVectorized",
+        f'open({str(canary)!r}, "w").write("ran")\n\nSTRATEGY = MomentumVectorized',
     )
-    raises = [node for node in ast.walk(probe) if isinstance(node, ast.Raise)]
-    returns = [node for node in ast.walk(probe) if isinstance(node, ast.Return)]
-    assert raises, "the vectorized probe placeholder must raise"
-    assert not returns, "the placeholder must not return, which would read as a pass"
-    assert "bar_loop" in SUPPORTED_STYLES
-    assert "vectorized" not in SUPPORTED_STYLES
+    with pytest.raises((StrategySafetyError, StrategyLoadError)):
+        probing_loader.load_source(hostile, family="hostile")
+    assert not canary.exists()
 
 
-def test_bar_loop_still_loads_alongside_the_refusal(loader: StrategyLoader) -> None:
-    """The refusal must be narrow: it costs nothing to the styles that are fine."""
-    with pytest.raises(StrategyLoadError):
-        loader.load_source(VECTORIZED, family="vectorized")
-    assert loader.load_source(SMA_CROSS, family="sma_cross").style == "bar_loop"
+def test_a_vectorized_strategy_cannot_be_loaded_without_a_configured_probe(
+    loader: StrategyLoader, sources: FileSourceStore
+) -> None:
+    """The default loader has no sandbox, no engine and no bars, so it cannot
+    check a vectorised strategy — and therefore must not admit one. An unchecked
+    vectorised strategy is exactly what section 9.1 forbids."""
+    with pytest.raises(StrategyLoadError) as excinfo:
+        loader.load_source(HONEST_VECTORIZED, family="momentum")
+
+    assert "truncation probe" in str(excinfo.value)
+    assert set(excinfo.value.context["missing"]) == {
+        "sandbox",
+        "engine_module",
+        "engine_class",
+        "probe_bars",
+    }
+    assert not sources.exists(canonical_strategy_id(HONEST_VECTORIZED))
+
+
+@pytest.mark.parametrize("missing", ["sandbox", "engine_module", "engine_class", "probe_bars"])
+def test_a_partially_configured_probe_is_still_a_refusal(
+    store: SqliteExperimentStore, sources: FileSourceStore, missing: str
+) -> None:
+    """Three of the four is not a probe. Fail closed on each one individually."""
+    settings: dict[str, object] = {
+        "sandbox": SandboxRunner(),
+        "engine_module": "quantlab.adapters.engine.simple_bar",
+        "engine_class": "SimpleBarEngine",
+        "probe_bars": _probe_bars(),
+    }
+    settings[missing] = None if missing in ("sandbox", "probe_bars") else ""
+    partial = StrategyLoader(store, sources, **settings)  # type: ignore[arg-type]
+    with pytest.raises(StrategyLoadError, match="truncation probe"):
+        partial.load_source(HONEST_VECTORIZED, family="momentum")
+
+
+def test_bar_loop_strategies_are_not_probed(loader: StrategyLoader) -> None:
+    """``BarWindow`` refuses a future bar by construction (INV-3), so an empirical
+    probe would add nothing but nine child processes per load."""
+    loaded = loader.load_source(SMA_CROSS, family="sma_cross")
+    assert loaded.style == "bar_loop"
+    assert loaded.probe is None
 
 
 def test_an_unknown_style_is_refused(loader: StrategyLoader) -> None:
@@ -750,7 +852,7 @@ def test_loaded_strategy_is_immutable(loader: StrategyLoader) -> None:
 
 
 def test_the_supported_styles_are_declared_not_implied() -> None:
-    assert frozenset({"bar_loop"}) == SUPPORTED_STYLES
+    assert frozenset({"bar_loop", "vectorized"}) == SUPPORTED_STYLES
 
 
 # ---------------------------------------------------------------------------
@@ -826,26 +928,36 @@ def test_a_class_without_params_yields_an_empty_schema() -> None:
     assert _param_schema(source, check_source(source)) == {}
 
 
-def test_a_store_that_answers_with_the_wrong_lineage_is_not_believed(
+def test_an_unknown_version_is_a_refusal_not_an_ancestry_walk(
     sources: FileSourceStore,
 ) -> None:
-    """The loader asked for one version and must be handed that version.
+    """The loader asks the store for one row.
 
-    A store returning a chain the id is not in has answered a different question;
-    treating the last row as the answer would attribute one strategy's checksum to
-    another's source.
+    It used to read a version by walking ``lineage`` and picking the id out of the
+    chain, which answered a different question and cost a traversal to answer it.
+    ``get_strategy_version`` is the question actually being asked, and ``None`` is
+    a refusal rather than something to interpret.
     """
+    asked: list[str] = []
 
-    class Other:
-        strategy_id = "f" * 16
+    class DirectLookupStore:
+        def get_strategy_version(self, strategy_id: str) -> Any:
+            asked.append(strategy_id)
+            return None
 
-    class WrongLineageStore:
-        def lineage(self, strategy_id: str) -> list[Any]:
-            return [Other()]
+        def lineage(self, strategy_id: str) -> list[Any]:  # pragma: no cover - must not run
+            raise AssertionError("the loader must not walk a chain to fetch one row")
 
-        def __getattr__(self, name: str) -> Any:  # pragma: no cover - not reached
-            raise AssertionError(f"unexpected call: {name}")
-
-    loader = StrategyLoader(WrongLineageStore(), sources)  # type: ignore[arg-type]
+    loader = StrategyLoader(DirectLookupStore(), sources)  # type: ignore[arg-type]
     with pytest.raises(StrategyLoadError, match="no such strategy version"):
         loader.verify("0" * 16)
+    assert asked == ["0" * 16]
+
+
+def test_the_store_adapter_answers_the_direct_lookup(
+    store: SqliteExperimentStore, loader: StrategyLoader
+) -> None:
+    assert store.get_strategy_version("0" * 16) is None
+    loaded = loader.load_source(SMA_CROSS, family="sma_cross")
+    row = store.get_strategy_version(loaded.strategy_id)
+    assert row is not None and row.strategy_id == loaded.strategy_id

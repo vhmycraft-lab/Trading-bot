@@ -526,6 +526,11 @@ class SqliteExperimentStore:
             session.add(row)
             return row
 
+    def get_strategy_version(self, strategy_id: str) -> StrategyVersion | None:
+        """One registered version, or ``None`` if the id is unknown."""
+        with session_scope(self.factory) as session:
+            return session.get(StrategyVersion, strategy_id)
+
     def lineage(self, strategy_id: str) -> list[StrategyVersion]:
         """Every ancestor of ``strategy_id``, oldest first, ending with itself."""
         chain: list[StrategyVersion] = []

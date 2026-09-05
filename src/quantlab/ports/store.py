@@ -168,6 +168,15 @@ class ExperimentStore(Protocol):
         """Record one immutable version of a strategy's source."""
         ...
 
+    def get_strategy_version(self, strategy_id: str) -> StrategyVersionRecord | None:
+        """One registered version, or ``None``.
+
+        Distinct from :meth:`lineage`: asking for a single row should not walk a
+        parent chain, and a caller that only wants to know whether an id is
+        registered should not have to interpret an ancestry to find out.
+        """
+        ...
+
     def lineage(self, strategy_id: str) -> list[StrategyVersionRecord]:
         """Every ancestor of ``strategy_id``, oldest first, ending with itself."""
         ...
