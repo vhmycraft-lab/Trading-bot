@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from quantlab.core.config import (
     REMOVED_KEYS,
@@ -46,8 +47,11 @@ def write(tmp_path: Path, text: str) -> Path:
 def test_defaults_match_the_spec(config: AppConfig) -> None:
     e = config.evolution
     assert e.enabled is True
-    assert e.population_size == 16
-    assert (e.n_survivors, e.n_offspring, e.n_immigrants) == (12, 3, 1)
+    # Project Rome section 1 fixes the active population at 32, superseding the
+    # master spec's 16. The proportions are the same ones scaled.
+    assert e.population_size == 32
+    assert (e.n_survivors, e.n_offspring, e.n_immigrants) == (24, 6, 2)
+    assert e.n_survivors + e.n_offspring + e.n_immigrants == e.population_size
     assert e.max_generations == 30
     assert e.seed == 42
     assert e.max_evaluations == 1_000
@@ -85,7 +89,7 @@ def test_diversity_defaults(config: AppConfig) -> None:
     assert d.min_population_diversity == 0.35
     assert (d.structural_weight, d.behavioural_weight) == (0.4, 0.6)
     assert d.behavioural_weight > d.structural_weight, "behaviour matters more than structure"
-    assert (d.immigrant_boost, d.max_immigrants) == (2, 4)
+    assert (d.immigrant_boost, d.max_immigrants) == (2, 8)
 
 
 def test_fitness_defaults(config: AppConfig) -> None:
@@ -193,8 +197,10 @@ def test_a_field_constraint_also_surfaces_as_a_config_error(default_config_path:
 
 
 def test_an_immigrant_boost_may_not_displace_a_survivor() -> None:
+    """An immigrant boost fills open slots; there are ``n_offspring +
+    n_immigrants`` of those, and one more would evict an elite."""
     with pytest.raises(ConfigError, match="never a survivor"):
-        EvolutionSettings(diversity=DiversitySettings(max_immigrants=6))
+        EvolutionSettings(diversity=DiversitySettings(max_immigrants=9))
 
 
 def test_max_immigrants_must_cover_the_baseline() -> None:
@@ -215,7 +221,7 @@ def test_the_budget_must_allow_one_generation() -> None:
 
 def test_cannot_promote_more_than_the_population() -> None:
     with pytest.raises(ConfigError, match="cannot exceed the population size"):
-        EvolutionSettings(promotion=PromotionSettings(n_promote=20))
+        EvolutionSettings(promotion=PromotionSettings(n_promote=40))
 
 
 # ---------------------------------------------------------------------------
@@ -421,10 +427,10 @@ def test_an_unknown_evolution_key_is_rejected(tmp_path: Path, default_config_pat
 def test_set_override_reaches_the_evolution_section(default_config_path: Path) -> None:
     config = load_config(
         [],
-        ["evolution.n_survivors=8", "evolution.n_offspring=6", "evolution.n_immigrants=2"],
+        ["evolution.n_survivors=24", "evolution.n_offspring=6", "evolution.n_immigrants=2"],
         default_path=default_config_path,
     )
-    assert (config.evolution.n_survivors, config.evolution.n_offspring) == (8, 6)
+    assert (config.evolution.n_survivors, config.evolution.n_offspring) == (24, 6)
 
 
 def test_env_override_reaches_the_evolution_section(
@@ -457,14 +463,14 @@ def test_a_config_without_an_evolution_section_still_loads(
     extra = write(tmp_path, "optimize:\n  n_trials: 40\nbacktest:\n  fee_bps: 12.0\n")
     config = load_config([extra], default_path=default_config_path)
     assert config.optimize.n_trials == 40
-    assert config.evolution.population_size == 16
+    assert config.evolution.population_size == 32
 
 
 def test_the_model_supplies_the_whole_section_when_yaml_omits_it(tmp_path: Path) -> None:
     minimal = tmp_path / "minimal.yaml"
     minimal.write_text("market:\n  symbol: BTC/USDT\n", encoding="utf-8")
     config = load_config(default_path=minimal)
-    assert config.evolution.population_size == 16
+    assert config.evolution.population_size == 32
     assert config.evolution.fitness.weights.total == pytest.approx(1.0)
 
 
@@ -486,3 +492,38 @@ def test_check_removed_keys_ignores_a_clean_config() -> None:
 
 def test_check_removed_keys_tolerates_a_non_mapping_branch() -> None:
     check_removed_keys({"research": "not-a-mapping"})
+
+
+# ---------------------------------------------------------------------------
+# Project Rome section 1: exactly 32 active strategies
+# ---------------------------------------------------------------------------
+def test_the_active_population_is_exactly_thirty_two(config: AppConfig) -> None:
+    """Rome section 46 asks for this verbatim: "Active population = exactly 32".
+
+    It is a property of the *configuration*, not of the loop, because the three
+    slot counts are validated to sum to the population size. That is what makes
+    "no cycle may finish with 31 or 33" unreachable rather than merely unlikely:
+    a generation is assembled from survivors, offspring and immigrants, and there
+    is no configuration in which those add up to anything else.
+    """
+    e = config.evolution
+    assert e.population_size == 32
+    assert e.n_survivors + e.n_offspring + e.n_immigrants == 32
+
+
+def test_a_population_whose_slots_do_not_add_up_is_refused() -> None:
+    """The enforcement behind the test above. Without it, 32 would be a number in
+    a file rather than a guarantee."""
+    with pytest.raises(ConfigError, match="must equal population_size"):
+        EvolutionSettings(population_size=32, n_survivors=24, n_offspring=6, n_immigrants=3)
+    with pytest.raises(ConfigError, match="must equal population_size"):
+        EvolutionSettings(population_size=32, n_survivors=24, n_offspring=6, n_immigrants=1)
+
+
+def test_a_generation_always_reserves_a_slot_for_an_unrelated_candidate() -> None:
+    """Rome section 26's anti-memorisation, in the population rules: at least one
+    immigrant every generation, so the search always carries a candidate that
+    owes nothing to the current leader."""
+    assert EvolutionSettings().n_immigrants >= 1
+    with pytest.raises(ValidationError):
+        EvolutionSettings(population_size=32, n_survivors=26, n_offspring=6, n_immigrants=0)

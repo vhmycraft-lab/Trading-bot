@@ -58,10 +58,10 @@ optimize:                         # parameter refinement of a promoted candidate
 # ---------------------------------------------------------------------------
 evolution:
   enabled: true
-  population_size: 16
-  n_survivors: 12                 # elite carried into the next generation unchanged
-  n_offspring: 3                  # children produced from survivors by mutation
-  n_immigrants: 1                 # novel candidates, unrelated to any survivor
+  population_size: 32             # Project Rome section 1: exactly 32 active
+  n_survivors: 24                 # elite carried into the next generation unchanged
+  n_offspring: 6                  # children produced from survivors by mutation
+  n_immigrants: 2                 # novel candidates, unrelated to any survivor
   # INVARIANT: n_survivors + n_offspring + n_immigrants == population_size
   max_generations: 30
   seed: 42
@@ -95,7 +95,7 @@ evolution:
     structural_weight: 0.4        # behaviour is weighted higher than structure on purpose:
     behavioural_weight: 0.6       # two strategies that trade alike are one strategy
     immigrant_boost: 2            # extra immigrants while diversity is below the floor
-    max_immigrants: 4             # INVARIANT: <= n_offspring + n_immigrants, because a
+    max_immigrants: 8             # INVARIANT: <= n_offspring + n_immigrants, because a
                                   # boost displaces offspring and never a survivor
 
   fitness:                        # spec 13.3; weights MUST sum to 1.0

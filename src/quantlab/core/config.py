@@ -442,7 +442,7 @@ class DiversitySettings(_Section):
     structural_weight: float = Field(default=0.4, ge=0, le=1)
     behavioural_weight: float = Field(default=0.6, ge=0, le=1)
     immigrant_boost: int = Field(default=2, ge=0)
-    max_immigrants: int = Field(default=4, ge=1)
+    max_immigrants: int = Field(default=8, ge=1)
 
     @model_validator(mode="after")
     def _similarity_weights_sum_to_one(self) -> DiversitySettings:
@@ -673,13 +673,19 @@ class EvolutionSettings(_Section):
     """Population-based search over strategy candidates (spec section 13)."""
 
     enabled: bool = True
-    population_size: int = Field(default=16, ge=2)
-    n_survivors: int = Field(default=12, ge=1)
-    n_offspring: int = Field(default=3, ge=0)
+    #: Project Rome section 1 fixes the active population at 32. The master spec
+    #: named 16; Rome is the later and explicit instruction, and the proportions
+    #: below are the same ones scaled, so the search's shape is unchanged and only
+    #: its width differs. The sum identity enforced in `_check_population` is what
+    #: makes "no cycle may finish with 31 or 33" a property of the configuration
+    #: rather than of the loop remembering to count.
+    population_size: int = Field(default=32, ge=2)
+    n_survivors: int = Field(default=24, ge=1)
+    n_offspring: int = Field(default=6, ge=0)
     #: At least one, always: spec section 13.5 reserves a slot per generation for a
     #: candidate that owes nothing to the current leader.  With the sum identity
     #: below, this also guarantees ``n_survivors < population_size``.
-    n_immigrants: int = Field(default=1, ge=1)
+    n_immigrants: int = Field(default=2, ge=1)
     max_generations: int = Field(default=30, ge=1)
     seed: int = 42
     max_wall_clock_s: int = Field(default=21_600, ge=1)
