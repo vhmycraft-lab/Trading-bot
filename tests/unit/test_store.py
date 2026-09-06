@@ -1506,10 +1506,8 @@ def _candidate(
     )
 
 
-def test_migration_0002_is_the_head_and_adds_the_five_evolution_tables(
-    empty_engine: Engine,
-) -> None:
-    assert upgrade_to_head(empty_engine) == _head_revision() == "0002"
+def test_migration_0002_adds_the_five_evolution_tables(empty_engine: Engine) -> None:
+    upgrade_to_head(empty_engine)
     present = set(inspect(empty_engine).get_table_names())
     assert set(EVOLUTION_TABLES) <= present
     assert EVOLUTION_TABLES == (
@@ -1521,11 +1519,50 @@ def test_migration_0002_is_the_head_and_adds_the_five_evolution_tables(
     )
 
 
-def test_migration_0002_follows_0001(db_engine: Engine) -> None:
+def test_migration_0003_is_the_head_and_adds_the_environment_audit_table(
+    empty_engine: Engine,
+) -> None:
+    """Project Rome sections 18 and 24: one row per generation recording the
+    environment it was run against, keyed so a generation can have only one."""
+    assert upgrade_to_head(empty_engine) == _head_revision() == "0003"
+    inspector = inspect(empty_engine)
+    assert "training_environment" in inspector.get_table_names()
+    columns = {column["name"] for column in inspector.get_columns("training_environment")}
+    assert {
+        "environment_id",
+        "evolution_id",
+        "gen_index",
+        "window_start_ts",
+        "window_end_ts",
+        "seed_hex",
+        "starting_capital",
+        "slippage_bps",
+        "asset_universe_json",
+        "dataset_version",
+        "execution_model_version",
+        "derivation_version",
+    } <= columns
+
+
+def test_the_environment_audit_table_permits_one_row_per_generation(
+    db_engine: Engine,
+) -> None:
+    """The uniqueness is the guarantee that a resumed run replays rather than
+    re-draws: a second environment for the same generation is a database error,
+    not a silently different experiment."""
+    inspector = inspect(db_engine)
+    unique = {
+        tuple(c["column_names"]) for c in inspector.get_unique_constraints("training_environment")
+    }
+    assert ("evolution_id", "gen_index") in unique
+
+
+def test_the_migrations_run_in_order(db_engine: Engine) -> None:
     """Ordering, not just presence: the evolution tables reference `experiment`,
-    `dataset`, `split_policy` and `run`, so 0001 has to have run first."""
+    `dataset`, `split_policy` and `run`, and `training_environment` references
+    `evolution_run`, so each migration needs the one before it."""
     assert missing_tables(db_engine) == ()
-    assert current_revision(db_engine) == "0002"
+    assert current_revision(db_engine) == "0003"
 
 
 def test_the_evolution_indexes_from_the_spec_exist(db_engine: Engine) -> None:

@@ -19,11 +19,16 @@ evolution from its stored configuration reproduces the identical sequence of
 candidate ids. That is what makes ``evolve resume`` correct: a run that resumed
 into a different sequence would silently be a different search.
 
-**Cost.** Every evaluation is an ordinary cached run (section 11.2), so a survivor
-carried forward costs nothing and only genuinely new candidates consume budget.
-The count that matters is ``n_evaluations``, which section 14.4 charges into the
-deflated Sharpe ratio's ``M`` — and it counts cache hits too, because a candidate
-that was evaluated once and reused ten times was still one hypothesis tested.
+**Cost.** Every evaluation is an ordinary cached run (section 11.2). With one
+fixed environment a survivor carried forward is a cache hit and costs nothing.
+Under per-generation environments (Project Rome sections 4-19) it is not: the
+environment is part of the run's identity, so a survivor is re-evaluated on the
+new generation's history — which is the entire point, since a survivor that has
+only ever been measured on one window has not been shown to survive anything. The
+count that matters either way is ``n_evaluations``, which section 14.4 charges
+into the deflated Sharpe ratio's ``M``, and it counts cache hits too, because a
+candidate that was evaluated once and reused ten times was still one hypothesis
+tested.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from typing import Any, Final
 import numpy as np
 
 from quantlab.core.config import EvolutionSettings
+from quantlab.core.environment import GenerationEnvironment
 from quantlab.core.errors import EngineError, QuantLabError, StrategyError
 from quantlab.core.fitness import (
     FITNESS_REJECTED,
@@ -64,7 +70,9 @@ from quantlab.ports.store import ExperimentStore
 __all__ = [
     "EVOLUTION_SEGMENTS",
     "STOP_REASONS",
+    "EnvironmentFor",
     "EvolutionResult",
+    "GenerationEnvironment",
     "GenerationOutcome",
     "Member",
     "evolve",
@@ -116,6 +124,14 @@ Register = Callable[[StrategyGenome], tuple[str, str]]
 
 #: Builds an evaluator bound to one strategy's source, for the runner.
 EvaluatorFor = Callable[[str], Any]
+
+
+#: Supplies one generation's environment. Injected, like ``inner_for``: the
+#: selection must happen inside Rome's trusted infrastructure before the backtest
+#: begins (Rome section 8), and ``evolution/`` may import neither an adapter nor
+#: a randomisation service of its own (INV-8). ``None`` keeps the loop on one
+#: fixed environment, which is what a walk-forward window or a replay wants.
+EnvironmentFor = Callable[[int], GenerationEnvironment]
 
 #: Measures generalisation inside train (section 13.6). Optional: without it the
 #: ``inner_oos`` component scores 0 for every candidate, which is honest and
@@ -198,6 +214,7 @@ def evolve(
     library: OperatorLibrary | None = None,
     seeds: Sequence[StrategyGenome] = (),
     inner_for: InnerFor | None = None,
+    environment_for: EnvironmentFor | None = None,
     segment: str = "train",
     start_generation: int = 0,
     clock: Callable[[], float] = time.monotonic,
@@ -223,6 +240,12 @@ def evolve(
         config: The backtest settings every candidate is evaluated under.
         seeds: Explicitly supplied genomes for generation 0 (section 13.2).
         inner_for: Optional inner walk-forward (section 13.6).
+        environment_for: Optional per-generation environment (Project Rome
+            sections 4-19). Called once per generation, **including** generations
+            a resume is replaying — a replayed generation must be handed the
+            environment it was recorded with, or the resumed run becomes a
+            different search. When ``None`` every generation shares ``bars_train``
+            and ``config``.
         segment: Checked by :func:`require_evolution_segment` before anything runs.
         start_generation: The first generation to **record**, for ``evolve
             resume``. Earlier generations are still recomputed — see below.
@@ -259,6 +282,7 @@ def evolve(
             members = _next_generation(previous, settings, draw, gen_index)
 
         replaying = gen_index < start_generation
+        environment = environment_for(gen_index) if environment_for is not None else None
         outcome, used = _run_generation(
             gen_index=gen_index,
             record=not replaying,
@@ -267,14 +291,15 @@ def evolve(
             runner=runner,
             register=register,
             evaluator_for=evaluator_for,
-            bars=bars_train,
+            bars=bars_train if environment is None else environment.bars,
             evolution_id=evolution_id,
             experiment_id=experiment_id,
             dataset_id=dataset_id,
             split_id=split_id,
-            segment=segment,
+            segment=segment if environment is None else environment.segment_for(segment),
             settings=settings,
-            config=config,
+            config=config if environment is None else environment.config,
+            environment_id="" if environment is None else environment.environment_id,
             inner_for=inner_for,
         )
         if replaying:
@@ -464,6 +489,7 @@ def _run_generation(
     settings: EvolutionSettings,
     config: BacktestConfig,
     inner_for: InnerFor | None,
+    environment_id: str = "",
 ) -> tuple[GenerationOutcome, int]:
     """Steps 1-4 of section 13.2, plus the plan for the next generation.
 
@@ -531,6 +557,10 @@ def _run_generation(
             "n_offspring": len(plan.offspring_parents),
             "n_immigrants": plan.n_immigrants,
             "boosted": plan.slots.boosted,
+            # The opaque id only. The window, seed, capital and slippage live in
+            # `training_environment` and are read by a privileged audit, never by
+            # anything that builds a prompt or a strategy's inputs (Rome section 6).
+            "environment_id": environment_id,
         },
     )
     if record:

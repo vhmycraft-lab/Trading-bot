@@ -29,6 +29,7 @@ from rich.table import Table
 from quantlab.adapters.engine.simple_bar import SimpleBarEngine
 from quantlab.adapters.store.artifacts import FileArtifactStore, FileSourceStore
 from quantlab.adapters.store.sqlite import SqliteExperimentStore, missing_tables
+from quantlab.core.environment import EnvironmentSelector, build_window_pool, sampling_report
 from quantlab.core.errors import ConfigError, StoreError
 from quantlab.core.genome import StrategyGenome
 from quantlab.core.hashing import short_id
@@ -42,6 +43,7 @@ from quantlab.evolution.loop import resume_point
 from quantlab.evolution.population import ScoredCandidate
 from quantlab.evolution.promotion import promote
 from quantlab.experiments.env import git_state
+from quantlab.experiments.environment import GenerationEnvironmentProvider
 from quantlab.experiments.runner import ExperimentRunner
 from quantlab.sandbox.runner import SandboxLimits, SandboxRunner
 from quantlab.strategies_io.evaluators import SandboxEvaluator
@@ -146,6 +148,71 @@ def _evaluator_for(source: str) -> SandboxEvaluator:
     )
 
 
+def _environment_provider(
+    state: Any,
+    store: Any,
+    *,
+    evolution_id: str,
+    policy: Any,
+    bars: Any,
+    config: Any,
+    dataset_id: str,
+) -> GenerationEnvironmentProvider | None:
+    """Rome's per-generation environment service, or ``None`` if it is switched off.
+
+    Built here because this is the only layer holding both a store adapter and
+    market data (INV-8). The selector is constructed from the *split policy*, so
+    the pool it enumerates is bounded by the training segment and cannot be
+    widened by anything downstream (Project Rome section 8).
+
+    The asset universe defaults to the split's own symbol. Rome section 15
+    requires that an environment's assets actually existed in the period it
+    covers, and inventing a universe for a single-symbol split would break that;
+    ``environment.asset_universe`` is where a real multi-asset universe goes.
+    """
+    settings = state.config.environment
+    if not settings.enabled:
+        return None
+    selector = EnvironmentSelector(
+        build_window_pool(policy, settings),
+        settings,
+        universe=settings.asset_universe or (policy.symbol,),
+        dataset_version=dataset_id,
+        execution_model_version=f"{SimpleBarEngine.name}/{SimpleBarEngine.version}",
+    )
+    return GenerationEnvironmentProvider(
+        selector=selector,
+        store=store,
+        evolution_id=evolution_id,
+        bars_train=bars,
+        base_config=config,
+    )
+
+
+def _report_sampling(state: Any, provider: GenerationEnvironmentProvider | None) -> None:
+    """Say how evenly this run covered training history (Rome sections 18, 43).
+
+    Printed at the end of every run rather than filed away, because a campaign
+    that concentrated on one part of history should say so where the person who
+    ran it will read it.
+    """
+    if provider is None:
+        console.print("[dim]training-environment randomisation is disabled[/dim]")
+        return
+    report = sampling_report(provider.windows_used, provider.pool, state.config.environment)
+    console.print(
+        f"history exposure: {report.n_environments} environment(s), "
+        f"{len(report.window_counts)} distinct window(s), "
+        f"concentration {report.concentration:.2f}"
+    )
+    if report.flagged:
+        console.print(
+            "[yellow]sampling is uneven[/yellow]: "
+            f"over-used buckets {list(report.overused_buckets)}, "
+            f"never sampled {list(report.unsampled_buckets)}"
+        )
+
+
 @app.command("run")
 def run(
     ctx: typer.Context,
@@ -202,6 +269,15 @@ def run(
         mutation_config_json=settings.mutation.model_dump_json(),
         diversity_config_json=settings.diversity.model_dump_json(),
     )
+    provider = _environment_provider(
+        state,
+        store,
+        evolution_id=evolution_id,
+        policy=stored_policy,
+        bars=bars,
+        config=config,
+        dataset_id=dataset_id,
+    )
     result = run_evolution(
         evolution_id=evolution_id,
         store=store,
@@ -215,10 +291,12 @@ def run(
         settings=settings,
         config=config,
         library=OperatorLibrary(limits=settings.genome),
+        environment_for=provider,
         segment="train",
     )
     store.finish_evolution_run(evolution_id, status="finished", stop_reason=result.stop_reason)
     _report(result, store)
+    _report_sampling(state, provider)
 
 
 @app.command("resume")
@@ -238,9 +316,22 @@ def resume(
         console.print(f"run {evolution_id} is already complete ({start} generations)")
         return
 
-    _policy, bars = _train_bars(state.container)
+    policy, bars = _train_bars(state.container)
     settings = state.config.evolution.model_copy(
         update={"population_size": row.population_size, "seed": row.seed}
+    )
+    config = _backtest_config(state)
+    # The provider replays generations that already have a recorded environment
+    # and draws fresh ones only beyond the resume point, which is what keeps the
+    # replayed portion candidate-for-candidate identical to the original run.
+    provider = _environment_provider(
+        state,
+        store,
+        evolution_id=evolution_id,
+        policy=replace(policy, dataset_id=row.dataset_id),
+        bars=bars,
+        config=config,
+        dataset_id=row.dataset_id,
     )
     result = run_evolution(
         evolution_id=evolution_id,
@@ -253,14 +344,16 @@ def resume(
         dataset_id=row.dataset_id,
         split_id=row.split_id,
         settings=settings,
-        config=_backtest_config(state),
+        config=config,
         library=OperatorLibrary(limits=settings.genome),
+        environment_for=provider,
         segment="train",
         start_generation=start,
     )
     store.finish_evolution_run(evolution_id, status="finished", stop_reason=result.stop_reason)
     console.print(f"resumed at generation {start}")
     _report(result, store)
+    _report_sampling(state, provider)
 
 
 @app.command("status")

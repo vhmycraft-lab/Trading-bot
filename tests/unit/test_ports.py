@@ -190,6 +190,15 @@ class StubExperimentStore:
     def record_lockbox_access(self, **_kwargs: Any) -> Any:
         return None
 
+    def record_training_environment(self, **_kwargs: Any) -> Any:
+        return None
+
+    def find_training_environment(self, evolution_id: str, gen_index: int) -> Any:
+        return None
+
+    def training_environments_for(self, evolution_id: str) -> Any:
+        return []
+
     def create_evolution_run(self, **_fields: Any) -> Any:
         return None
 

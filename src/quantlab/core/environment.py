@@ -59,11 +59,13 @@ from quantlab.core.config import EnvironmentSettings
 from quantlab.core.errors import ConfigError
 from quantlab.core.hashing import canonical_json, sha256_hex
 from quantlab.core.splits import SplitPolicy
+from quantlab.core.types import BacktestConfig, BarFrame
 
 __all__ = [
     "ENVIRONMENT_MODEL_VERSION",
     "SEED_BYTES",
     "EnvironmentSelector",
+    "GenerationEnvironment",
     "SamplingReport",
     "TrainingEnvironment",
     "TrainingWindow",
@@ -659,3 +661,38 @@ def sampling_report(
             if expected[index] > 0 and bucket_counts[index] == 0
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationEnvironment:
+    """One generation's evaluation environment, as this loop sees it.
+
+    Three fields, and the omissions are the design. The loop is handed the bars
+    the environment resolves to, the backtest settings it produces, and an
+    **opaque** id to record — never the window bounds, the seed, the starting
+    capital or the slippage as named quantities. Rome section 6 requires the
+    selection be hidden from strategy-facing paths, and the cheapest way to keep
+    a value out of a prompt or a strategy input is for the code that builds them
+    never to have held it.
+
+    ``environment_id`` also enters the *segment* name, which is what keeps the run
+    cache honest: a run's identity (section 11.2) is built from the strategy, the
+    parameters, the split, the segment and the configuration hash, and **not**
+    from the bar range. Two generations that drew different windows but the same
+    capital and slippage would otherwise share a run id, and the second would
+    silently be served the first one's results. Suffixing the segment makes the
+    environment part of the identity without inventing a second identity rule.
+    """
+
+    bars: BarFrame
+    config: BacktestConfig
+    environment_id: str
+
+    def segment_for(self, base: str) -> str:
+        """``base`` qualified by this environment, e.g. ``train:9f2c...``.
+
+        Safe to store and to display: the id is a one-way function of the seed
+        (Rome section 34), so it distinguishes environments without carrying the
+        window back out with it.
+        """
+        return f"{base}:{self.environment_id}" if self.environment_id else base

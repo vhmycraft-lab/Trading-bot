@@ -303,6 +303,42 @@ class LlmInteraction(Base):
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class TrainingEnvironmentRow(Base):
+    """One generation's hidden training environment (Project Rome sections 18, 24).
+
+    The audit record, and the only place a seed is ever stored. Append-only like
+    every table without a ``MUTABLE_COLUMNS`` entry — an audit record that could
+    be edited afterwards would not be one — and unique per generation, so a
+    resumed run replays the environment that was recorded rather than drawing a
+    second one and silently becoming a different experiment.
+    """
+
+    __tablename__ = "training_environment"
+    __table_args__ = (
+        UniqueConstraint("evolution_id", "gen_index", name="uq_training_environment_generation"),
+        _STRICT,
+    )
+
+    environment_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    evolution_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("evolution_run.evolution_id"), nullable=False
+    )
+    gen_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_end_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_id: Mapped[str] = mapped_column(Text, nullable=False)
+    starting_capital: Mapped[float] = mapped_column(REAL, nullable=False)
+    slippage_bps: Mapped[float] = mapped_column(REAL, nullable=False)
+    asset_universe_json: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The secret. Recorded here and passed to nothing (Rome sections 6, 19).
+    seed_hex: Mapped[str] = mapped_column(Text, nullable=False)
+    pool_id: Mapped[str] = mapped_column(Text, nullable=False)
+    dataset_version: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_model_version: Mapped[str] = mapped_column(Text, nullable=False)
+    derivation_version: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class LockboxAccess(Base):
     __tablename__ = "lockbox_access"
     __table_args__ = _STRICT
@@ -540,6 +576,7 @@ TABLE_NAMES: Final[tuple[str, ...]] = (
     "lockbox_access",
     "paper_session",
     *EVOLUTION_TABLES,
+    "training_environment",
 )
 
 #: Columns exempt from the append-only rule (master spec section 6).

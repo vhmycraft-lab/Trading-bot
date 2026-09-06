@@ -496,6 +496,27 @@ class ExperimentStore(Protocol):
         """Record a look at the test partition, whether or not it passed."""
         ...
 
+    # -- hidden training environments (Project Rome sections 18, 24) --------
+    def record_training_environment(
+        self, *, evolution_id: str, environment: Mapping[str, Any]
+    ) -> Any:
+        """File one generation's environment, before that generation runs."""
+        ...
+
+    def find_training_environment(self, evolution_id: str, gen_index: int) -> Any | None:
+        """The environment a generation was recorded with, or ``None``.
+
+        Declared on the port because the evolution loop reads it on resume and
+        ``evolution/`` may not import an adapter (INV-8). A resumed generation
+        replays the environment it was recorded with; drawing a fresh one would
+        make the resumed run a different search.
+        """
+        ...
+
+    def training_environments_for(self, evolution_id: str) -> Sequence[Any]:
+        """Every environment recorded for a run, in generation order."""
+        ...
+
 
 @runtime_checkable
 class ArtifactStore(Protocol):

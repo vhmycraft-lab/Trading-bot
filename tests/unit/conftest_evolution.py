@@ -28,12 +28,14 @@ from quantlab.adapters.store.sqlite import (
     make_session_factory,
     upgrade_to_head,
 )
-from quantlab.core.config import DiversitySettings, EvolutionSettings
+from quantlab.core.config import DiversitySettings, EnvironmentSettings, EvolutionSettings
+from quantlab.core.environment import EnvironmentSelector, build_window_pool
 from quantlab.core.genome import StrategyGenome
 from quantlab.core.splits import SplitPolicy
 from quantlab.core.types import BacktestConfig, BarFrame
 from quantlab.evolution.compiler import compile_genome
 from quantlab.evolution.library import OperatorLibrary
+from quantlab.experiments.environment import GenerationEnvironmentProvider
 from quantlab.experiments.runner import ExperimentRunner
 from quantlab.strategies_io.loader import StrategyLoader
 
@@ -190,4 +192,56 @@ def build_harness(tmp_path: Path, settings: EvolutionSettings | None = None) -> 
         settings=resolved,
         config=zero_cost_config(bars_per_year=8760),
         library=OperatorLibrary(limits=resolved.genome),
+    )
+
+
+def environment_settings(**overrides: Any) -> EnvironmentSettings:
+    """Environment bands sized for the harness's 401-bar training segment."""
+    base: dict[str, Any] = {
+        "min_window_bars": 120,
+        "window_min_fraction": 0.3,
+        "window_max_fraction": 0.7,
+        "stride_fraction": 0.02,
+        "n_history_buckets": 8,
+    }
+    base.update(overrides)
+    return EnvironmentSettings(**base)
+
+
+def environment_provider(
+    harness: Harness,
+    evolution_id: str,
+    settings: EnvironmentSettings | None = None,
+) -> GenerationEnvironmentProvider:
+    """Rome's per-generation environment service, wired to this harness.
+
+    The real selector against the real store, so the tests that use it exercise
+    the record-then-replay ordering rather than a stand-in for it.
+    """
+    resolved = settings or environment_settings()
+    policy = SplitPolicy(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        train_start_ts=EPOCH,
+        train_end_ts=EPOCH + 400 * HOUR,
+        embargo_bars=0,
+        val_start_ts=EPOCH + 401 * HOUR,
+        val_end_ts=EPOCH + 500 * HOUR,
+        test_start_ts=EPOCH + 501 * HOUR,
+        test_end_ts=None,
+        source_json="{}",
+        dataset_id="d0",
+    )
+    return GenerationEnvironmentProvider(
+        selector=EnvironmentSelector(
+            build_window_pool(policy, resolved),
+            resolved,
+            universe=["BTC/USDT"],
+            dataset_version="d0",
+            execution_model_version="simple_bar/1",
+        ),
+        store=harness.store,
+        evolution_id=evolution_id,
+        bars_train=harness.bars,
+        base_config=harness.config,
     )

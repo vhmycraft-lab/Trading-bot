@@ -48,6 +48,7 @@ from quantlab.adapters.store.models import (
     StrategyFamily,
     StrategyVersion,
     Trade,
+    TrainingEnvironmentRow,
     ValidationVerdict,
 )
 from quantlab.adapters.store.models import SplitPolicy as SplitPolicyRow
@@ -1002,6 +1003,81 @@ class SqliteExperimentStore:
         with session_scope(self.factory) as session:
             rows = session.execute(statement).scalars().all()
         return sorted(rows, key=lambda r: (r.created_at, r.access_id))
+
+    # -- hidden training environments (Project Rome sections 18, 24) --------
+    def record_training_environment(
+        self,
+        *,
+        evolution_id: str,
+        environment: Mapping[str, Any],
+    ) -> TrainingEnvironmentRow:
+        """File one generation's environment. Written **before** the generation runs.
+
+        Recording first is what makes the audit trail complete rather than
+        best-effort: a generation that crashed mid-way still has a row saying what
+        it was run against, and a row that appeared only on success would leave
+        exactly the failures an auditor most wants to reconstruct unrecorded.
+
+        The row is append-only, and ``UNIQUE (evolution_id, gen_index)`` means a
+        second call for the same generation is a database error rather than a
+        silent second draw.
+        """
+        with session_scope(self.factory) as session:
+            row = TrainingEnvironmentRow(
+                environment_id=str(environment["environment_id"]),
+                evolution_id=evolution_id,
+                gen_index=int(environment["generation_index"]),
+                window_start_ts=int(environment["window_start_ts"]),
+                window_end_ts=int(environment["window_end_ts"]),
+                window_id=str(environment["window_id"]),
+                starting_capital=float(environment["starting_capital"]),
+                slippage_bps=float(environment["slippage_bps"]),
+                asset_universe_json=json.dumps(list(environment["asset_universe"])),
+                seed_hex=str(environment["seed_hex"]),
+                pool_id=str(environment["pool_id"]),
+                dataset_version=str(environment["dataset_version"]),
+                execution_model_version=str(environment["execution_model_version"]),
+                derivation_version=str(environment["derivation_version"]),
+                created_at=self._now(),
+            )
+            session.add(row)
+            return row
+
+    def training_environments_for(self, evolution_id: str) -> list[TrainingEnvironmentRow]:
+        """Every environment recorded for a run, in generation order."""
+        with session_scope(self.factory) as session:
+            rows = (
+                session.execute(
+                    select(TrainingEnvironmentRow).where(
+                        TrainingEnvironmentRow.evolution_id == evolution_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return sorted(rows, key=lambda r: r.gen_index)
+
+    def find_training_environment(
+        self, evolution_id: str, gen_index: int
+    ) -> TrainingEnvironmentRow | None:
+        """The environment a generation was run against, or ``None``.
+
+        What ``evolve resume`` reads. A resumed generation must be replayed under
+        the environment it was recorded with; drawing a fresh one would make the
+        resumed run a different search, which is the invariant
+        ``tests/integration/test_evolution_resume.py`` holds.
+        """
+        with session_scope(self.factory) as session:
+            return (
+                session.execute(
+                    select(TrainingEnvironmentRow).where(
+                        TrainingEnvironmentRow.evolution_id == evolution_id,
+                        TrainingEnvironmentRow.gen_index == int(gen_index),
+                    )
+                )
+                .scalars()
+                .first()
+            )
 
     # -- studies and paper sessions ----------------------------------------
     def record_optuna_study(
