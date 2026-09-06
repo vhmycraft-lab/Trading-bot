@@ -365,6 +365,15 @@ class SqliteExperimentStore:
     def __repr__(self) -> str:
         return f"SqliteExperimentStore(bind={self.factory.kw.get('bind')!r})"
 
+    def now_ms(self) -> int:
+        """The clock this store stamps rows with.
+
+        Public because the lockbox budget (section 14.6) compares ``created_at``
+        values against "now", and reading the wall clock separately would let an
+        injected test clock and the rows it wrote disagree about what month it is.
+        """
+        return self._now()
+
     # -- datasets and splits ------------------------------------------------
     def get_or_create_dataset(
         self,

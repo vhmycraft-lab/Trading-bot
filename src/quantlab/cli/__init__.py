@@ -13,16 +13,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import logging
-import traceback
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 from rich.console import Console
-from typer.core import TyperGroup
 
 from quantlab import __version__
 from quantlab.adapters.store.sqlite import (
@@ -38,15 +34,15 @@ from quantlab.cli import evolve as evolve_module
 from quantlab.cli import optimize as optimize_module
 from quantlab.cli import report as report_module
 from quantlab.cli import validate as validate_module
+from quantlab.cli._exit import QuantLabGroup
 from quantlab.container import PROFILES, Container, Profile, build_container
 from quantlab.core.config import AppConfig, load_config
-from quantlab.core.errors import ConfigError, QuantLabError, exit_code_for
+from quantlab.core.errors import ConfigError
 from quantlab.core.logging import configure_logging, get_logger
 
 __all__ = ["CliState", "QuantLabGroup", "app", "main"]
 
 console = Console()
-err_console = Console(stderr=True)
 log = get_logger("quantlab.cli")
 
 
@@ -84,29 +80,6 @@ class CliState:
             log_dir=Path(config.project.artifacts_dir) / "logs",
             log_date=dt.datetime.now(dt.UTC).date(),
         )
-
-
-class QuantLabGroup(TyperGroup):
-    """Root command group that maps QuantLab errors onto the documented exit codes.
-
-    The translation lives here rather than in a ``Typer.__call__`` override so
-    that it applies identically to the installed console script, to
-    ``python -m``, and to ``typer.testing.CliRunner`` in the test suite.
-    """
-
-    # `ctx` is a click Context, but Typer vendors its own click build, so the
-    # precise type lives in a private module; Any keeps the override compatible.
-    def invoke(self, ctx: Any) -> Any:
-        try:
-            return super().invoke(ctx)
-        except QuantLabError as exc:
-            error_id = uuid.uuid4().hex[:12]
-            code = exit_code_for(exc)
-            err_console.print(f"[red]error[/] {exc}  [dim](error_id={error_id})[/]")
-            logging.getLogger("quantlab.cli").debug(
-                "unhandled QuantLabError %s\n%s", error_id, traceback.format_exc()
-            )
-            raise SystemExit(code) from exc
 
 
 app = typer.Typer(

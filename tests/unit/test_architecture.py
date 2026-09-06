@@ -291,3 +291,52 @@ def test_the_judgement_module_list_is_not_vacuous() -> None:
     existing = {_module_name(path) for path in _python_files()}
     assert JUDGEMENT_MODULES & existing, "no judgement module exists yet to guard"
     assert any(_module_name(path).startswith(SEARCH_PACKAGES) for path in _python_files())
+
+
+# --- INV-5: the lockbox is a separate binary (spec section 14.6) -------------
+LOCKBOX_CLI = "quantlab.cli.lockbox"
+
+
+def test_inv5_the_research_cli_does_not_import_the_lockbox() -> None:
+    """Section 14.6: "The research CLI MUST NOT import ``cli/lockbox.py``".
+
+    ``cli/lockbox.py`` is the only module that builds a container with
+    ``profile="lockbox"``, which is the only profile whose data source is not
+    wrapped in a :class:`PartitionGuard`. If any research module could import it,
+    the unguarded source would be one attribute lookup away from the search.
+    Keeping it out of the research import graph makes that unreachable rather
+    than merely discouraged, so ``quantlab`` and ``quantlab-lockbox`` are two
+    binaries.
+    """
+    offenders: list[str] = []
+    for path in _python_files():
+        module = _module_name(path)
+        if module == LOCKBOX_CLI:
+            continue
+        if LOCKBOX_CLI in _imported_modules(_parse(path)):
+            offenders.append(module)
+    assert offenders == [], offenders
+
+
+def test_inv5_only_the_lockbox_cli_asks_for_the_lockbox_profile() -> None:
+    """The unguarded profile is named in exactly two places, and one is its definition.
+
+    ``container.py`` defines the profile and attaches the guard to every other
+    one; ``cli/lockbox.py`` is the single caller allowed to ask for it. A third
+    module naming it would be a second door onto the test partition.
+    """
+    users: list[str] = []
+    for path in _python_files():
+        module = _module_name(path)
+        if module in {"quantlab.container", LOCKBOX_CLI}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if 'profile="lockbox"' in text or "profile='lockbox'" in text:
+            users.append(module)
+    assert users == [], users
+
+
+def test_the_lockbox_cli_exists_so_the_guards_above_are_not_vacuous() -> None:
+    """Both tests above pass trivially if the module they name is absent."""
+    assert (SRC / "cli" / "lockbox.py").is_file()
+    assert LOCKBOX_CLI in {_module_name(path) for path in _python_files()}

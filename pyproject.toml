@@ -29,6 +29,10 @@ dashboard = ["streamlit~=1.39"]
 
 [project.scripts]
 quantlab = "quantlab.cli:app"
+# A separate binary, not a subcommand: spec section 14.6 forbids the research CLI
+# from importing cli/lockbox.py, and the surest way to keep that import from
+# happening is for the research binary to have no lockbox command to route to.
+quantlab-lockbox = "quantlab.cli.lockbox:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/quantlab"]

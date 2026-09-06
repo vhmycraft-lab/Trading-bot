@@ -56,6 +56,15 @@ def project(tmp_path: Path, repo_root: Path, monkeypatch: pytest.MonkeyPatch) ->
     )
     (configs / "splits" / "btcusdt_1h.yaml").write_text(SPLIT_POLICY, encoding="utf-8")
 
+    # The platform's own baselines are project content, not package data: the
+    # validation and lockbox pipelines read `strategies/baselines/buy_and_hold.py`
+    # off disk and run it through the sandbox like any other strategy (INV-4). A
+    # project without them is not a project a person would have.
+    baselines = tmp_path / "strategies" / "baselines"
+    baselines.mkdir(parents=True)
+    for source in (repo_root / "strategies" / "baselines").glob("*.py"):
+        (baselines / source.name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
     store = ParquetBarStore(tmp_path / "data")
     BinanceArchiveIngestor(store).rebuild(
         "BTC/USDT",
