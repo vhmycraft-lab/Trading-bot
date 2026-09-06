@@ -142,6 +142,15 @@ class StubExperimentStore:
     def lineage(self, strategy_id: str) -> list[Any]:
         return []
 
+    def find_family(self, family_id: str) -> Any:
+        return None
+
+    def record_verdict(self, **_fields: Any) -> Any:
+        return None
+
+    def verdicts_for(self, strategy_id: str) -> list[Any]:
+        return []
+
     def increment_validation_touches(self, family_id: str) -> int:
         return 0
 

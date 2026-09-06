@@ -117,7 +117,7 @@ class GateInputs:
     trades_train: Sequence[Trade] = ()
     trades_val: Sequence[Trade] = ()
     #: Realised exposure per bar on the validation segment.
-    position_frac_val: Sequence[float] = ()
+    position_frac_val: Sequence[float] | np.ndarray = ()
     #: Market-permutation p-value (section 14.4, check 3).
     permutation_p: float | None = None
     #: ``buy_and_hold`` on the validation segment (section 14.1, step 5).

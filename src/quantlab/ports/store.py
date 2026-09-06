@@ -181,6 +181,31 @@ class ExperimentStore(Protocol):
         """Every ancestor of ``strategy_id``, oldest first, ending with itself."""
         ...
 
+    def find_family(self, family_id: str) -> Any:
+        """The strategy family with this id, or ``None``."""
+        ...
+
+    def record_verdict(
+        self,
+        *,
+        verdict_id: str,
+        strategy_id: str,
+        split_id: str,
+        params_json: str,
+        verdict: str,
+        overfit_score: float,
+        hard_gates_json: str,
+        soft_checks_json: str,
+        thresholds_json: str,
+        n_trials_accounted: int,
+    ) -> Any:
+        """Record one validation verdict. Append-only (spec section 6)."""
+        ...
+
+    def verdicts_for(self, strategy_id: str) -> Sequence[Any]:
+        """Every verdict recorded for a strategy version, oldest first."""
+        ...
+
     def increment_validation_touches(self, family_id: str) -> int:
         """Count one more look at the validation partition; return the new total."""
         ...

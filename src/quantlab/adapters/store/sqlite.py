@@ -564,6 +564,66 @@ class SqliteExperimentStore:
             row.validation_touches += 1
             return int(row.validation_touches)
 
+    def record_verdict(
+        self,
+        *,
+        verdict_id: str,
+        strategy_id: str,
+        split_id: str,
+        params_json: str,
+        verdict: str,
+        overfit_score: float,
+        hard_gates_json: str,
+        soft_checks_json: str,
+        thresholds_json: str,
+        n_trials_accounted: int,
+    ) -> ValidationVerdict:
+        """Record one validation verdict. Append-only (spec section 6).
+
+        A verdict is never revised: it is a statement about what was known when
+        it was reached, and the thresholds it was reached under travel with it.
+        Re-validating a strategy writes a *new* verdict, and the two together are
+        the history of how the platform's opinion changed.
+        """
+        with session_scope(self.factory) as session:
+            row = ValidationVerdict(
+                verdict_id=verdict_id,
+                strategy_id=strategy_id,
+                split_id=split_id,
+                params_json=params_json,
+                verdict=verdict,
+                overfit_score=float(overfit_score),
+                hard_gates_json=hard_gates_json,
+                soft_checks_json=soft_checks_json,
+                thresholds_json=thresholds_json,
+                n_trials_accounted=int(n_trials_accounted),
+                created_at=self._now(),
+            )
+            session.add(row)
+            return row
+
+    def verdicts_for(self, strategy_id: str) -> list[ValidationVerdict]:
+        """Every verdict recorded for a strategy version, oldest first."""
+        with session_scope(self.factory) as session:
+            rows = (
+                session.execute(
+                    select(ValidationVerdict).where(ValidationVerdict.strategy_id == strategy_id)
+                )
+                .scalars()
+                .all()
+            )
+        return sorted(rows, key=lambda r: (r.created_at, r.verdict_id))
+
+    def find_family(self, family_id: str) -> StrategyFamily | None:
+        """The family with this id, or ``None``.
+
+        What the validation pipeline reads before it starts: section 14.1 step 0
+        refuses a family that is not ``open``, and step 8 freezes one that has
+        spent its validation budget.
+        """
+        with session_scope(self.factory) as session:
+            return session.get(StrategyFamily, family_id)
+
     def set_family_status(self, family_id: str, status: str) -> StrategyFamily:
         """Open, freeze or close a family."""
         with session_scope(self.factory) as session:

@@ -37,6 +37,7 @@ from quantlab.cli import doctor as doctor_module
 from quantlab.cli import evolve as evolve_module
 from quantlab.cli import optimize as optimize_module
 from quantlab.cli import report as report_module
+from quantlab.cli import validate as validate_module
 from quantlab.container import PROFILES, Container, Profile, build_container
 from quantlab.core.config import AppConfig, load_config
 from quantlab.core.errors import ConfigError, QuantLabError, exit_code_for
@@ -125,6 +126,7 @@ app.add_typer(backtest_module.app, name="backtest")
 app.add_typer(report_module.app, name="report")
 app.add_typer(optimize_module.app, name="optimize")
 app.add_typer(evolve_module.app, name="evolve")
+app.add_typer(validate_module.app, name="validate")
 
 
 def _version_callback(value: bool) -> None:

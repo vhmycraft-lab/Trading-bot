@@ -34,6 +34,7 @@ from quantlab.core.errors import ConfigError
 from quantlab.core.metrics import MetricSet
 from quantlab.core.types import Trade
 from quantlab.core.validation.concentration import TradeRemovalReport, trade_removal_report
+from quantlab.core.validation.sensitivity import SensitivityReport
 
 __all__ = [
     "FITNESS_REJECTED",
@@ -138,15 +139,6 @@ class InnerFoldReport:
             return None
         variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
         return math.sqrt(variance) / abs(mean)
-
-
-@dataclass(frozen=True, slots=True)
-class SensitivityReport:
-    """How far the objective falls around the chosen parameters (section 13.8)."""
-
-    #: Median relative drop of the neighbourhood objective, as a fraction.
-    median_drop: float | None = None
-    n_neighbours: int = 0
 
 
 # ---------------------------------------------------------------------------

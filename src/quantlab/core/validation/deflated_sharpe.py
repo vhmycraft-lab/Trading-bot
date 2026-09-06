@@ -67,7 +67,7 @@ def deannualise(annualised: float, bars_per_year: int) -> float:
     return float(annualised) / math.sqrt(float(bars_per_year))
 
 
-def sharpe_variance(trial_sharpes: Sequence[float]) -> float:
+def sharpe_variance(trial_sharpes: Sequence[float] | np.ndarray) -> float:
     """Variance of the Sharpe ratios a search produced.
 
     The dispersion of the trials is what says how much luck was available to the
@@ -194,7 +194,7 @@ def deflated_sharpe(
     )
 
 
-def moments(returns: Sequence[float]) -> tuple[float, float, float, int]:
+def moments(returns: Sequence[float] | np.ndarray) -> tuple[float, float, float, int]:
     """Per-period Sharpe, skew, non-excess kurtosis and count of a return series.
 
     Everything the deflation needs, computed once from one array so the four
