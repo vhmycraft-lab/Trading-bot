@@ -425,6 +425,15 @@ class ExperimentStore(Protocol):
         """Record a promotion **before** the run it authorises executes (INV-9)."""
         ...
 
+    def promotions_for(self, candidate_id: str) -> Sequence[Any]:
+        """Every promotion recorded for a candidate, oldest first.
+
+        What a validation run consults before it is created: a candidate with no
+        row here has not been through the recorded, budgeted act of section 13.7
+        (INV-9).
+        """
+        ...
+
     def candidates_for(self, evolution_id: str, gen_index: int | None = ...) -> Sequence[Any]:
         """A run's candidates, deterministically ordered."""
         ...

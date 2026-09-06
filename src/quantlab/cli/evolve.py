@@ -34,10 +34,13 @@ from quantlab.core.genome import StrategyGenome
 from quantlab.core.hashing import short_id
 from quantlab.core.types import BacktestConfig, SlippageConfig
 from quantlab.evolution.compiler import compile_genome
+from quantlab.evolution.diversity import CandidateView, Signature
 from quantlab.evolution.library import OperatorLibrary
 from quantlab.evolution.lineage import ancestry, lineage_tree, verify_run
 from quantlab.evolution.loop import evolve as run_evolution
 from quantlab.evolution.loop import resume_point
+from quantlab.evolution.population import ScoredCandidate
+from quantlab.evolution.promotion import promote
 from quantlab.experiments.env import git_state
 from quantlab.experiments.runner import ExperimentRunner
 from quantlab.sandbox.runner import SandboxLimits, SandboxRunner
@@ -293,6 +296,101 @@ def status(
     report = verify_run(store, evolution_id)
     verdict = "holds" if report.ok else f"FAILS for {', '.join(report.mismatched)}"
     console.print(f"INV-10         : {verdict} over {report.n_checked} replayed candidate(s)")
+
+
+@app.command("promote")
+def promote_command(
+    ctx: typer.Context,
+    evolution_id: Annotated[str, typer.Argument(help="The run to promote from.")],
+    n: Annotated[int, typer.Option("--n", help="Override promotion.n_promote.")] = 0,
+    generation: Annotated[
+        int, typer.Option("--generation", help="Promote from this generation; -1 for the last.")
+    ] = -1,
+) -> None:
+    """Promote the best candidates to the validation segment (INV-9). 🔒
+
+    The only route from evolution to validation. A ``candidate_promotion`` row is
+    written for each promoted candidate **before** any validation run executes,
+    and each promotion increments its family's ``validation_touches`` — the count
+    section 14.1 freezes a family at twenty of, and section 14.4 charges into the
+    deflated Sharpe ratio's ``M``.
+
+    Promoting does not run the validation pipeline; it authorises it. Section
+    14.1's pipeline is `quantlab validate`.
+    """
+    _state, store, _runner, _loader = _wiring(ctx)
+    row = _require_run(store, evolution_id)
+    settings = ctx.obj.config.evolution.promotion
+    if n:
+        settings = settings.model_copy(update={"n_promote": n})
+
+    generations = store.generations_for(evolution_id)
+    if not generations:
+        raise StoreError("this run has no completed generation", evolution_id=evolution_id)
+    gen_index = generations[-1].gen_index if generation < 0 else generation
+
+    candidates = _scored_candidates(store, evolution_id, gen_index)
+    promotions = promote(
+        store,
+        candidates,
+        evolution_id=evolution_id,
+        gen_index=gen_index,
+        settings=settings,
+        reason=f"top candidate of generation {gen_index}",
+    )
+
+    table = Table(title=f"promoted from {evolution_id} generation {gen_index}")
+    table.add_column("candidate")
+    table.add_column("promotion")
+    table.add_column("family touches")
+    for record in promotions:
+        table.add_row(record.candidate_id, record.promotion_id, str(record.touches))
+    console.print(table)
+    if not promotions:
+        console.print(
+            "[yellow]nothing was promoted[/yellow]: no candidate reached "
+            f"promotion.min_fitness ({settings.min_fitness})"
+        )
+    console.print("[dim]a validation run may now be created for these candidates only[/dim]")
+    del row
+
+
+def _scored_candidates(
+    store: SqliteExperimentStore, evolution_id: str, gen_index: int
+) -> list[ScoredCandidate]:
+    """Rebuild one generation's candidates from the store, for ranking.
+
+    Position series are not stored (only their digest, section 13.5), so the
+    behavioural half of similarity is unavailable here and the promotion filter
+    falls back to structure. That is the conservative direction: two candidates
+    that look structurally alike are treated as alike, so the validation budget is
+    spent on fewer, more clearly distinct strategies rather than more.
+    """
+    import json
+
+    rebuilt: list[ScoredCandidate] = []
+    for row in store.candidates_for(evolution_id, gen_index):
+        if row.fitness is None:
+            continue
+        signature = Signature(
+            triples=tuple(
+                tuple(triple) for triple in json.loads(row.signature_json).get("triples", [])
+            ),
+            risk_controls=frozenset(json.loads(row.signature_json).get("risk_controls", [])),
+        )
+        rebuilt.append(
+            ScoredCandidate(
+                view=CandidateView(
+                    candidate_id=row.candidate_id,
+                    fitness=float(row.fitness),
+                    signature=signature,
+                    behaviour=row.behaviour_hash,
+                ),
+                inner_oos=float(json.loads(row.components_json).get("inner_oos", 0.0)),
+                n_free_params=len(json.loads(row.params_json)),
+            )
+        )
+    return rebuilt
 
 
 @app.command("lineage")

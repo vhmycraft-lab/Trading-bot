@@ -208,6 +208,9 @@ class StubExperimentStore:
     def record_promotion(self, **_fields: Any) -> Any:
         return None
 
+    def promotions_for(self, candidate_id: str) -> list[Any]:
+        return []
+
     def candidates_for(self, evolution_id: str, gen_index: int | None = None) -> list[Any]:
         return []
 
