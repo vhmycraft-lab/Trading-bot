@@ -168,6 +168,7 @@ validation:
   min_trades_val: 30
   min_trades_train: 100
   max_single_trade_pct: 0.25
+  sanity_drift_allowance: 0.5    # G_SANITY slack; the cap bounds the target, not the drift (§14.3)
   cost_survival_multiplier: 2.0
   permutation:
     n_market_permutations: 200

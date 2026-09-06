@@ -237,6 +237,15 @@ class ValidationSettings(_Section):
     min_trades_val: int = Field(default=30, ge=0)
     min_trades_train: int = Field(default=100, ge=0)
     max_single_trade_pct: float = Field(default=0.25, gt=0)
+    #: Slack on the position cap in ``G_SANITY`` (spec section 14.3).
+    #:
+    #: ``max_position_fraction`` bounds the *target* fraction at the deciding
+    #: bar; the realised fraction then drifts with the market until the next
+    #: rebalance, so a near-zero tolerance would fail correctly-behaved
+    #: strategies.  The exact invariant — committed capital at a fill never
+    #: exceeds ``max_position_fraction x equity`` at the deciding bar — is the
+    #: engine's, and is checked by its property tests.
+    sanity_drift_allowance: float = Field(default=0.5, ge=0)
     cost_survival_multiplier: float = Field(default=2.0, ge=1)
     permutation: PermutationSettings = PermutationSettings()
     degradation_min_ratio: float = Field(default=0.5, ge=0)

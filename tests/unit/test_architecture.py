@@ -80,6 +80,28 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
 ADAPTER_IMPORTERS = ("quantlab.container", "quantlab.cli", "quantlab.adapters")
 
 
+#: Modules that read validation- or test-derived numbers (spec section 14).
+#:
+#: Nothing under `evolution/` or `optimize/` may import one. INV-9 already stops
+#: the search from *producing* validation metrics — it is confined to the train
+#: segment — but the import rule is the cheaper guard: it fails at collection
+#: time rather than after a campaign, and it catches the convenience that would
+#: wire a verdict back into fitness before anyone runs a search to notice.
+JUDGEMENT_MODULES: frozenset[str] = frozenset(
+    {
+        "quantlab.core.validation.gates",
+        "quantlab.core.validation.score",
+        "quantlab.core.validation.deflated_sharpe",
+        "quantlab.core.validation.pbo",
+        "quantlab.core.validation.permutation",
+        "quantlab.core.validation.sensitivity",
+    }
+)
+
+#: Layers that search, and so must never read a judgement (spec section 14).
+SEARCH_PACKAGES: tuple[str, ...] = ("quantlab.evolution", "quantlab.optimize")
+
+
 def _python_files() -> list[Path]:
     return sorted(SRC.rglob("*.py"))
 
@@ -242,3 +264,30 @@ def test_the_exemption_is_used_only_where_the_spec_asks_for_it() -> None:
         if any(name in ALLOWED_UNDER_FORBIDDEN_ROOT for name in _imported_modules(_parse(path)))
     ]
     assert users == ["quantlab.experiments.env"]
+
+
+# --- section 14: the search may not read its own judgement -------------------
+def test_no_search_module_imports_a_validation_judgement() -> None:
+    """Phase G judges; it never feeds the search (spec sections 13.7, 14).
+
+    A fitness function that could read a deflated Sharpe ratio, a PBO estimate or
+    a gate verdict would be optimising against the measurement the whole platform
+    exists to produce. INV-9 already prevents the search from *producing* those
+    numbers, and this makes the shortcut unavailable as well.
+    """
+    offenders: list[str] = []
+    for path in _python_files():
+        module = _module_name(path)
+        if not module.startswith(SEARCH_PACKAGES):
+            continue
+        for imported in _imported_modules(_parse(path)):
+            if imported in JUDGEMENT_MODULES:
+                offenders.append(f"{module} imports {imported}")
+    assert offenders == [], offenders
+
+
+def test_the_judgement_module_list_is_not_vacuous() -> None:
+    """Guards the test above: a list naming no real module would pass silently."""
+    existing = {_module_name(path) for path in _python_files()}
+    assert JUDGEMENT_MODULES & existing, "no judgement module exists yet to guard"
+    assert any(_module_name(path).startswith(SEARCH_PACKAGES) for path in _python_files())

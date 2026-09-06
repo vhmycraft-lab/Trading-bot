@@ -109,7 +109,10 @@ module = ["quantlab.core.*", "quantlab.ports.*", "quantlab.sandbox.*"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["keyring", "keyring.*", "alembic", "alembic.*", "ccxt"]
+# Third-party packages that ship no type information. Listed by name rather
+# than silenced globally, so a missing stub for one of *our* modules is still
+# an error.
+module = ["keyring", "keyring.*", "alembic", "alembic.*", "ccxt", "scipy", "scipy.*"]
 ignore_missing_imports = true
 
 # ----------------------------------------------------------------------------
