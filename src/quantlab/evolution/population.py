@@ -31,6 +31,7 @@ from quantlab.evolution.diversity import (
     slot_plan,
 )
 from quantlab.evolution.library import OperatorLibrary
+from quantlab.evolution.mutation import Phenotype
 
 __all__ = [
     "CANDIDATE_ORIGINS",
@@ -60,6 +61,10 @@ class ScoredCandidate:
     #: The ``inner_oos`` fitness component, which breaks ties before parameter count.
     inner_oos: float = 0.0
     n_free_params: int = 0
+    #: What a survivor is carried forward as, and what an offspring is mutated
+    #: from. Kept here rather than on :class:`CandidateView` because similarity is
+    #: a property of what a candidate *did*, and the phenotype is what it *is*.
+    phenotype: Phenotype | None = None
 
     @property
     def candidate_id(self) -> str:

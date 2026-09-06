@@ -1074,6 +1074,17 @@ class SqliteExperimentStore:
             session.add(row)
             return row
 
+    def find_evolution_run(self, evolution_id: str) -> EvolutionRun | None:
+        """The evolution run with this id, or ``None``.
+
+        What ``evolve resume`` and ``evolve status`` read: a run's population
+        size, seed and generation budget are properties of the run as it was
+        opened, not of today's configuration file, and resuming with today's
+        numbers would silently continue a different search.
+        """
+        with session_scope(self.factory) as session:
+            return session.get(EvolutionRun, evolution_id)
+
     def finish_evolution_run(
         self, evolution_id: str, status: str, stop_reason: str | None = None
     ) -> EvolutionRun:

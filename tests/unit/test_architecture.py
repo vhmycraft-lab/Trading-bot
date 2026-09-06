@@ -59,10 +59,18 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
         {"quantlab.core", "quantlab.ports", "quantlab.sandbox", "quantlab.strategies_io"}
     ),
     # Evolution turns a genome into a registered strategy version, which is
-    # `strategies_io`'s job; the edge runs one way only, exactly as
+    # `strategies_io`'s job, and evaluates it through the runner, which is
+    # `experiments`'. Both edges run one way only, exactly as
     # `walkforward -> optimize` does.
     "quantlab.evolution": frozenset(
-        {"quantlab.core", "quantlab.ports", "quantlab.evolution", "quantlab.strategies_io"}
+        {
+            "quantlab.core",
+            "quantlab.evolution",
+            "quantlab.experiments",
+            "quantlab.optimize",
+            "quantlab.ports",
+            "quantlab.strategies_io",
+        }
     ),
 }
 

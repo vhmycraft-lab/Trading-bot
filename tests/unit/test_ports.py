@@ -151,6 +151,12 @@ class StubExperimentStore:
     def create_experiment(self, **_kwargs: Any) -> Any:
         return None
 
+    def metrics_for(self, run_id: str) -> dict[str, float | None]:
+        return {}
+
+    def trades_for(self, run_id: str) -> list[Any]:
+        return []
+
     def find_run(self, run_id: str) -> Any:
         return None
 
@@ -204,6 +210,9 @@ class StubExperimentStore:
 
     def candidates_for(self, evolution_id: str, gen_index: int | None = None) -> list[Any]:
         return []
+
+    def find_evolution_run(self, evolution_id: str) -> Any:
+        return None
 
     def generations_for(self, evolution_id: str) -> list[Any]:
         return []

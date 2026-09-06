@@ -204,6 +204,20 @@ class ExperimentStore(Protocol):
         """Register an experiment."""
         ...
 
+    def metrics_for(self, run_id: str) -> Mapping[str, float | None]:
+        """Every metric recorded for a run, by name.
+
+        The way a *cached* run's numbers are read back: section 11.2 returns the
+        stored record without re-executing, so a caller that needs the metrics of
+        a run it did not just produce reads them from here rather than simulating
+        again to find out what it already knows.
+        """
+        ...
+
+    def trades_for(self, run_id: str) -> Sequence[Any]:
+        """A run's trade ledger, in execution order."""
+        ...
+
     def find_run(self, run_id: str) -> RunRecord | None:
         """The run with this id, or ``None``.  The cache lookup of section 11.2."""
         ...
@@ -413,6 +427,10 @@ class ExperimentStore(Protocol):
 
     def candidates_for(self, evolution_id: str, gen_index: int | None = ...) -> Sequence[Any]:
         """A run's candidates, deterministically ordered."""
+        ...
+
+    def find_evolution_run(self, evolution_id: str) -> Any:
+        """The evolution run with this id, or ``None``."""
         ...
 
     def generations_for(self, evolution_id: str) -> Sequence[Any]:
