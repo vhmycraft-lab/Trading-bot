@@ -195,6 +195,27 @@ lockbox:
   max_per_family: 1
   max_per_month: 3
 
+# Per-generation hidden training environments (Project Rome sections 4-19).
+# Rome's own randomisation service selects one of these per generation; neither a
+# strategy nor the LLM may choose any field below for an individual run.
+# Commission and execution timing are deliberately absent: they are structural
+# properties of the venue (Rome sections 12, 13), not sources of uncertainty.
+environment:
+  enabled: true
+  window_min_fraction: 0.35       # shortest window, as a fraction of train
+  window_max_fraction: 0.75       # longest window
+  length_step_fraction: 0.05      # spacing between window lengths in the pool
+  stride_fraction: 0.02           # spacing between window start times
+  min_window_bars: 200            # absolute floor; never sample less
+  min_starting_capital: 5000.0    # realistic account sizes, quote currency
+  max_starting_capital: 50000.0
+  min_slippage_bps: 2.0           # realistic, bounded, venue-specific band
+  max_slippage_bps: 8.0
+  asset_universe: []              # empty means the split's own symbol
+  min_assets: 1
+  n_history_buckets: 20           # exposure tracking granularity
+  overuse_factor: 1.75            # report a bucket above this multiple of uniform
+
 llm:
   provider: glm                   # glm | mock
   model: glm-4-plus

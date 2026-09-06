@@ -268,6 +268,67 @@ class ValidationSettings(_Section):
         return value
 
 
+class EnvironmentSettings(_Section):
+    """Per-generation hidden training environments (Project Rome sections 4-19).
+
+    Every band here is a *documented realistic range*, which Rome section 9
+    requires and which is the difference between exposing a strategy to varied
+    conditions and manufacturing difficulty. Two quantities are deliberately
+    absent and must stay absent: **commission** (section 12) and **execution
+    timing** (section 13) are structural properties of the venue, not sources of
+    uncertainty, and randomising them would reject strategies for conditions no
+    venue produces.
+
+    Window bounds are fractions of the training segment so that one configuration
+    is meaningful across splits of very different lengths; ``min_window_bars`` is
+    the absolute floor underneath them.
+    """
+
+    enabled: bool = True
+    #: Shortest window, as a fraction of the training segment.
+    window_min_fraction: float = Field(default=0.35, gt=0, le=1)
+    #: Longest window, as a fraction of the training segment.
+    window_max_fraction: float = Field(default=0.75, gt=0, le=1)
+    #: Spacing between the window lengths in the pool.
+    length_step_fraction: float = Field(default=0.05, gt=0, le=1)
+    #: Spacing between window start times.
+    stride_fraction: float = Field(default=0.02, gt=0, le=1)
+    #: Rome section 8: never sample a window too short to mean anything.
+    min_window_bars: int = Field(default=200, ge=2)
+
+    #: Realistic account sizes for this research programme, in the quote currency.
+    min_starting_capital: float = Field(default=5_000.0, gt=0)
+    max_starting_capital: float = Field(default=50_000.0, gt=0)
+
+    #: Realistic slippage band for the venue (Rome section 11). Bounded, and
+    #: bounded *low*: the point is to test dependence on one exact execution
+    #: assumption, not to price in conditions the venue does not exhibit.
+    min_slippage_bps: float = Field(default=2.0, ge=0)
+    max_slippage_bps: float = Field(default=8.0, ge=0)
+
+    #: Assets an environment may expose. Empty means "the split's own symbol",
+    #: which is the honest default for a single-symbol split: fabricating a
+    #: universe would violate Rome section 15's requirement that assets actually
+    #: existed in the selected period.
+    asset_universe: tuple[str, ...] = ()
+    min_assets: int = Field(default=1, ge=1)
+
+    #: Exposure tracking (Rome sections 18, 43).
+    n_history_buckets: int = Field(default=20, ge=2)
+    #: A bucket is reported over-used above this multiple of its uniform share.
+    overuse_factor: float = Field(default=1.75, gt=1)
+
+    @model_validator(mode="after")
+    def _check_bands(self) -> EnvironmentSettings:
+        if self.window_max_fraction < self.window_min_fraction:
+            raise ValueError("window_max_fraction must be at least window_min_fraction")
+        if self.max_starting_capital < self.min_starting_capital:
+            raise ValueError("max_starting_capital must be at least min_starting_capital")
+        if self.max_slippage_bps < self.min_slippage_bps:
+            raise ValueError("max_slippage_bps must be at least min_slippage_bps")
+        return self
+
+
 class LockboxSettings(_Section):
     max_per_family: int = Field(default=1, ge=1)
     max_per_month: int = Field(default=3, ge=1)
@@ -748,6 +809,7 @@ class AppConfig(BaseSettings):
     walkforward: WalkForwardSettings = WalkForwardSettings()
     validation: ValidationSettings = ValidationSettings()
     lockbox: LockboxSettings = LockboxSettings()
+    environment: EnvironmentSettings = EnvironmentSettings()
     llm: LLMSettings = LLMSettings()
     research: ResearchSettings = ResearchSettings()
     sandbox: SandboxSettings = SandboxSettings()
