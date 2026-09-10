@@ -37,6 +37,14 @@ import pandas as pd
 
 from quantlab.core.costs import SlippageModel, build_slippage_model
 from quantlab.core.errors import EngineError, StrategyRuntimeError
+
+# The fill arithmetic is NOT defined here. It lives in `core/execution.py`
+# because `paper/broker.py` calls the same functions, and section 16.2 requires
+# a paper fill to price identically to a backtest one — bit for bit, which two
+# implementations cannot hold. If you are about to inline or "simplify" any of
+# these, read the warning at the top of that module first: the expressions are
+# grouped the way this engine has always evaluated them, and re-grouping them
+# changes recorded trade prices in the last decimal place.
 from quantlab.core.execution import (
     fee_of,
     needs_order,

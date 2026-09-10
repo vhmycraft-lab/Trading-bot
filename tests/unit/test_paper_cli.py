@@ -155,21 +155,19 @@ FORBIDDEN_OPTIONS = frozenset({"--live", "--real", "--broker", "--api-key", "--s
 def test_the_paper_command_offers_no_way_to_go_live() -> None:
     """INV-1 at the surface a person actually types at.
 
-    Asserted against the *rendered command surface* rather than against the text
-    of the module. Grepping the source would fire on the docstring that explains
-    this rule — it did — and a guard that punishes its own documentation is one
-    that gets softened instead of obeyed.
+    Asserted against Click's declared parameters — not the module text, and not
+    the rendered help either. Grepping the source fired on the docstring that
+    explains this rule; scanning the rendered help fired on it too, because
+    Typer renders a command's docstring *into* its help output. That second
+    failure was found by ``tests/unit/test_guard_meta.py``, which feeds this
+    scanner a command whose only mention of ``--live`` is in its docstring.
+    Only the parameter list knows what the command will actually accept.
     """
-    from typer.testing import CliRunner
+    from tests.guards import declared_option_names
 
     from quantlab.cli.paper import app
 
-    runner = CliRunner()
-    surfaces = [runner.invoke(app, ["--help"]).output]
-    for command in ("status", "report"):
-        surfaces.append(runner.invoke(app, [command, "--help"]).output)
-
-    assert any("status" in text for text in surfaces), "no commands were rendered"
-    for text in surfaces:
-        for option in FORBIDDEN_OPTIONS:
-            assert option not in text, f"{option} is offered by the paper CLI"
+    options = declared_option_names(app)
+    assert options, "no options were found at all; this scan would prove nothing"
+    for option in FORBIDDEN_OPTIONS:
+        assert option not in options, f"{option} is offered by the paper CLI"

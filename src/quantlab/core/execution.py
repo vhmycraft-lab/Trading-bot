@@ -21,6 +21,21 @@ history and following a stream.
 Everything here is deliberately free of :class:`BarFrame`, position state and
 configuration objects beyond the two the numbers actually depend on, so each
 function can be checked against arithmetic rather than against a fixture.
+
+.. warning::
+
+   **Do not re-group the arithmetic in this module.** Floating-point
+   multiplication does not associate: ``(a * b) * c`` and ``a * (b * c)`` differ
+   in the last bit, and the expressions below are written in the order the
+   engine has always evaluated them. Factoring out a common subexpression, or
+   tidying ``a * b * c / d`` into ``a * b * (c / d)``, changes recorded trade
+   prices in the fifteenth decimal place.
+
+   That is not a rounding curiosity here. ``tests/golden/`` records trade prices
+   exactly and ``tests/integration/test_paper_replay.py`` asserts the paper
+   broker and the engine produce the *same floats*, not close ones. Both fail on
+   a re-grouping, which is the intended outcome — the last line of defence is a
+   test, not this warning.
 """
 
 from __future__ import annotations
@@ -86,6 +101,9 @@ def slipped_price(
     ``slip_bps`` is clamped at zero for the same reason — a slippage model that
     returned a negative number would otherwise be a source of free money.
     """
+    # LOAD-BEARING GROUPING — see the module warning. The engine computed the
+    # rate first and applied it to the reference second; folding the two into
+    # one expression changes the fill price in the last bit.
     slip = max(0.0, slip_bps) * cost_multiplier / 1e4
     return reference * (1.0 + slip) if buying else reference * (1.0 - slip)
 
@@ -106,6 +124,10 @@ def fee_of(qty: float, price: float, config: BacktestConfig) -> float:
     original one, and it is what "bit for bit" in section 16.2 is measured
     against.
     """
+    # LOAD-BEARING GROUPING — see the module warning. Not
+    # `notional * fee_rate_of(config)`: that regrouping was written, looked
+    # identical, and moved a golden trade price from 23.961763893280605 to
+    # 23.9617638932806. The golden baselines caught it on the first run.
     return abs(qty) * price * config.fee_bps * config.cost_multiplier / 1e4
 
 
@@ -120,6 +142,8 @@ def size_from_notional(target_notional: float, price: float, config: BacktestCon
     """
     if price <= EPS:
         return 0.0
+    # LOAD-BEARING GROUPING — see the module warning. One division by the
+    # combined `price * (1 + fee_rate)`, not two successive divisions.
     return target_notional / (price * (1.0 + fee_rate_of(config)))
 
 

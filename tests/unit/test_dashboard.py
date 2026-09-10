@@ -17,11 +17,11 @@ screen, exactly like one a campaign earned.
 
 from __future__ import annotations
 
-import ast
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from tests.guards import engine_builder_uses, write_method_calls
 
 from quantlab.dashboard import build_family_tree, generation_summary
 from quantlab.dashboard.view import UNMEASURED
@@ -126,16 +126,11 @@ def test_no_dashboard_module_calls_a_write_method() -> None:
     """Section 22's acceptance criterion for T42, as a test rather than a review
     note. Matched on the attribute name, so ``store.record_verdict(...)`` is
     caught however the store was obtained or aliased."""
-    offenders: list[str] = []
-    for path in _python_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in WRITE_METHODS
-            ):
-                offenders.append(f"{path.name}:{node.lineno} {node.func.attr}")
+    offenders = [
+        f"{path.name}:{hit}"
+        for path in _python_files()
+        for hit in write_method_calls(path.read_text(encoding="utf-8"), WRITE_METHODS)
+    ]
     assert not offenders, "the dashboard must not write to the store: " + "; ".join(offenders)
 
 
@@ -165,22 +160,11 @@ def test_no_dashboard_module_opens_a_database_itself() -> None:
     the first time — and a guard that punishes its own documentation gets
     softened rather than obeyed.
     """
-    offenders: list[str] = []
-    for path in _python_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                name = (
-                    node.func.attr
-                    if isinstance(node.func, ast.Attribute)
-                    else getattr(node.func, "id", "")
-                )
-                if name in ENGINE_BUILDERS:
-                    offenders.append(f"{path.name}:{node.lineno} {name}()")
-            elif isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    if alias.name in ENGINE_BUILDERS:
-                        offenders.append(f"{path.name}:{node.lineno} imports {alias.name}")
+    offenders = [
+        f"{path.name}:{hit}"
+        for path in _python_files()
+        for hit in engine_builder_uses(path.read_text(encoding="utf-8"), ENGINE_BUILDERS)
+    ]
     assert not offenders, "the dashboard must not open a database itself: " + "; ".join(offenders)
 
 
