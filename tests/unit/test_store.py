@@ -2094,3 +2094,38 @@ def test_an_opaque_candidate_may_have_no_genome(store: SqliteExperimentStore) ->
         origin="immigrant",
     )
     assert opaque.genome_json is None
+
+
+def test_the_statuses_the_cli_writes_are_the_statuses_the_schema_allows(tmp_path) -> None:
+    """A campaign ran 448 evaluations and died on its last write.
+
+    ``finish_evolution_run`` took a bare ``str``, and the only thing enforcing
+    the allowed set was a SQLite CHECK constraint — which fires at commit time as
+    an IntegrityError from inside SQLAlchemy. The CLI wrote ``"finished"``, which
+    is not in the set, so no evolution run could ever record a terminal status.
+
+    This reads the constraint and the call sites rather than trusting either, so
+    the two cannot drift apart again.
+    """
+    import re
+    from pathlib import Path
+
+    from quantlab.adapters.store.models import EvolutionRun
+    from quantlab.ports.store import EvolutionRunStatus
+
+    constraint = next(
+        c
+        for c in EvolutionRun.__table__.constraints
+        if getattr(c, "name", "") == "ck_evolution_run_status"
+    )
+    allowed = set(re.findall(r"'([a-z]+)'", str(constraint.sqltext)))
+    assert allowed == set(EvolutionRunStatus.__args__), (
+        "the Literal and the CHECK constraint disagree"
+    )
+
+    source = Path("src/quantlab/cli/evolve.py").read_text(encoding="utf-8")
+    written = set(re.findall(r'finish_evolution_run\([^)]*status="([a-z]+)"', source))
+    assert written, "no finish_evolution_run call found; has the CLI moved?"
+    assert written <= allowed, (
+        f"the CLI writes {sorted(written - allowed)}, which the schema forbids"
+    )

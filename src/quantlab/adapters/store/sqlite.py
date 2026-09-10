@@ -57,6 +57,7 @@ from quantlab.core.hashing import canonical_json, short_id
 from quantlab.core.splits import SplitPolicy, parse_split_policy
 from quantlab.core.types import Trade as TradeRecord
 from quantlab.core.validation.deflated_sharpe import SUPERSEDED_M_FORMULA
+from quantlab.ports.store import EvolutionRunStatus
 
 __all__ = [
     "ALEMBIC_VERSION_TABLE",
@@ -1252,7 +1253,7 @@ class SqliteExperimentStore:
             return session.get(EvolutionRun, evolution_id)
 
     def finish_evolution_run(
-        self, evolution_id: str, status: str, stop_reason: str | None = None
+        self, evolution_id: str, status: EvolutionRunStatus, stop_reason: str | None = None
     ) -> EvolutionRun:
         """Close an evolution run and say why it stopped."""
         with session_scope(self.factory) as session:

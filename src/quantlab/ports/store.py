@@ -110,6 +110,16 @@ class VerdictRecord(Protocol):
     overfit_score: float
 
 
+#: The terminal statuses an ``evolution_run`` row may carry.
+#:
+#: Spelled out here rather than left as ``str`` because the only thing enforcing
+#: it used to be a SQLite CHECK constraint, which fires at commit time as an
+#: IntegrityError from inside SQLAlchemy. A campaign wrote ``"finished"`` — not
+#: in the set — and ran 448 evaluations to completion before dying on the last
+#: write, losing the terminal status of a run that had otherwise succeeded.
+EvolutionRunStatus = Literal["running", "completed", "stopped", "failed"]
+
+
 @runtime_checkable
 class ExperimentStore(Protocol):
     """Append-only record of everything an experiment depended on.
@@ -360,7 +370,7 @@ class ExperimentStore(Protocol):
         ...
 
     def finish_evolution_run(
-        self, evolution_id: str, status: str, stop_reason: str | None = ...
+        self, evolution_id: str, status: EvolutionRunStatus, stop_reason: str | None = ...
     ) -> Any:
         """Close an evolution run and say why it stopped."""
         ...

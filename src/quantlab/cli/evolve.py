@@ -294,7 +294,7 @@ def run(
         environment_for=provider,
         segment="train",
     )
-    store.finish_evolution_run(evolution_id, status="finished", stop_reason=result.stop_reason)
+    store.finish_evolution_run(evolution_id, status="completed", stop_reason=result.stop_reason)
     _report(result, store)
     _report_sampling(state, provider)
 
@@ -350,7 +350,7 @@ def resume(
         segment="train",
         start_generation=start,
     )
-    store.finish_evolution_run(evolution_id, status="finished", stop_reason=result.stop_reason)
+    store.finish_evolution_run(evolution_id, status="completed", stop_reason=result.stop_reason)
     console.print(f"resumed at generation {start}")
     _report(result, store)
     _report_sampling(state, provider)
