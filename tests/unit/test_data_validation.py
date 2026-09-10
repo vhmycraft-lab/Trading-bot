@@ -321,3 +321,129 @@ def test_report_summary_truncates_a_long_gap_list() -> None:
         gaps_reported=tuple(Gap(prev_ts=i, next_ts=i + 1, n_missing=9) for i in range(15)),
     )
     assert "and 5 more" in report.summary()
+
+
+# ---------------------------------------------------------------------------
+# off-grid bars: an exchange outage that resumes on a shifted phase
+#
+# Binance's own BTCUSDT 1h archive for 2018-02 contains such a run: the exchange
+# went down mid-bar, was out for 33 hours, resumed with its kline windows
+# phase-shifted by +28m14.789s for 43 bars, then re-synced to the hour.  Those
+# 43 bars are real observations, but no hourly grid can hold them, so the only
+# honest options are to refuse them or to drop them and admit the hole.  Both
+# directions are pinned here: relaxing the check by default would let a shifted
+# bar masquerade as an aligned one, which is the failure this guards against.
+# ---------------------------------------------------------------------------
+def _with_off_grid_run(n: int, start: int, length: int, offset: int) -> pd.DataFrame:
+    """A clean series whose bars ``start..start+length`` are shifted by ``offset``."""
+    frame = make_bars(n)
+    rows = frame.index[start : start + length]
+    frame.loc[rows, "ts_open"] = frame.loc[rows, "ts_open"] + offset
+    return frame
+
+
+def test_off_grid_bars_are_rejected_by_default() -> None:
+    """The default must stay fail-closed: no flag, no off-grid data."""
+    frame = _with_off_grid_run(20, start=5, length=4, offset=1_694_789)
+    with pytest.raises(DataValidationError, match="aligned to the timeframe grid"):
+        normalise_bars(frame, "1h")
+
+
+def test_the_rejection_names_the_way_out() -> None:
+    frame = _with_off_grid_run(20, start=5, length=4, offset=1_694_789)
+    with pytest.raises(DataValidationError) as excinfo:
+        normalise_bars(frame, "1h")
+    assert "off_grid='drop'" in str(excinfo.value)
+
+
+def test_dropping_off_grid_bars_records_the_window() -> None:
+    frame = _with_off_grid_run(20, start=5, length=4, offset=1_694_789)
+    normalised, report = normalise_bars(frame, "1h", off_grid="drop", allow_gaps=True)
+
+    assert report.n_off_grid_dropped == 4
+    assert len(report.off_grid_windows) == 1
+    window = report.off_grid_windows[0]
+    assert window.n_bars == 4
+    assert window.offset_ms == 1_694_789
+    assert np.all(normalised["ts_open"].to_numpy() % BAR_MS == 0)
+
+
+def test_a_dropped_window_is_not_silently_forgiven() -> None:
+    """``ok`` stays false, so a caller checking it cannot miss the drop."""
+    frame = _with_off_grid_run(20, start=5, length=4, offset=1_694_789)
+    _normalised, report = normalise_bars(frame, "1h", off_grid="drop", allow_gaps=True)
+    assert not report.ok
+    assert "off-grid" in report.summary()
+    assert "4 off-grid bar(s) dropped" in report.summary()
+
+
+def test_dropping_alone_does_not_accept_the_hole_it_leaves() -> None:
+    """Two separate acknowledgements: --drop-off-grid is not --allow-gaps."""
+    frame = _with_off_grid_run(20, start=5, length=8, offset=1_694_789)
+    with pytest.raises(DataGapError):
+        normalise_bars(frame, "1h", off_grid="drop")
+
+
+def test_the_dropped_window_becomes_untradeable() -> None:
+    """The engine refuses to fill on gap-filled bars, so the hole cannot trade.
+
+    This is the whole point of routing off-grid bars through the gap machinery
+    rather than snapping them: the window is preserved as time that existed and
+    on which no decision may be made.
+    """
+    frame = _with_off_grid_run(20, start=5, length=4, offset=1_694_789)
+    normalised, _report = normalise_bars(frame, "1h", off_grid="drop", allow_gaps=True)
+
+    original = make_bars(20)["ts_open"].to_numpy()
+    dropped = original[5:9]
+    filled = normalised.loc[normalised["is_gap_filled"], "ts_open"].to_numpy()
+    assert set(dropped.tolist()) == set(filled.tolist())
+    # and the series is still a complete, evenly spaced grid
+    assert np.all(np.diff(normalised["ts_open"].to_numpy()) == BAR_MS)
+
+
+def test_two_separate_runs_are_two_windows() -> None:
+    frame = make_bars(30)
+    frame.loc[frame.index[4:7], "ts_open"] += 1_694_789
+    frame.loc[frame.index[20:22], "ts_open"] += 1_694_789
+    _normalised, report = normalise_bars(frame, "1h", off_grid="drop", allow_gaps=True)
+    assert [window.n_bars for window in report.off_grid_windows] == [3, 2]
+    assert report.n_off_grid_dropped == 5
+
+
+def test_a_window_with_mixed_offsets_reports_no_single_offset() -> None:
+    frame = make_bars(20)
+    frame.loc[frame.index[5], "ts_open"] += 1_694_789
+    frame.loc[frame.index[6], "ts_open"] += 900_000
+    _normalised, report = normalise_bars(frame, "1h", off_grid="drop", allow_gaps=True)
+    assert len(report.off_grid_windows) == 1
+    assert report.off_grid_windows[0].offset_ms is None
+
+
+def test_stored_data_is_never_forgiven_its_off_grid_bars() -> None:
+    """``validate_bars`` has no policy knob: stored off-grid data is a defect."""
+    frame = _with_off_grid_run(20, start=5, length=4, offset=1_694_789)
+    with pytest.raises(DataValidationError, match="aligned to the timeframe grid"):
+        validate_bars(frame, "1h")
+
+
+def test_a_clean_series_is_unchanged_by_the_drop_policy() -> None:
+    """The policy must be inert on data that does not need it."""
+    frame = make_bars(48)
+    with_policy, report = normalise_bars(frame, "1h", off_grid="drop")
+    without, baseline = normalise_bars(frame, "1h")
+    pd.testing.assert_frame_equal(with_policy, without)
+    assert report.off_grid_windows == ()
+    assert report.n_off_grid_dropped == 0
+    assert report.ok and baseline.ok
+
+
+def test_the_summary_does_not_credit_long_gap_fills_to_the_short_gaps() -> None:
+    """169 filled bars "in 17 short gaps" overstated how routine the repair was."""
+    frame = drop_bars(make_bars(60), range(10, 12))  # short: 2 bars
+    frame = drop_bars(frame, range(28, 40))  # long: 12 bars
+    _normalised, report = normalise_bars(frame, "1h", allow_gaps=True)
+
+    assert report.n_gap_filled_bars == 14
+    assert report.n_short_gap_bars == 2
+    assert "14 total, 2 in 1 short gap(s)" in report.summary()

@@ -67,6 +67,13 @@ def pull(
     allow_gaps: Annotated[
         bool, typer.Option("--allow-gaps", help="Accept gaps longer than 3 bars.")
     ] = False,
+    drop_off_grid: Annotated[
+        bool,
+        typer.Option(
+            "--drop-off-grid",
+            help="Discard bars whose open time is off the timeframe grid, leaving a gap.",
+        ),
+    ] = False,
     no_verify: Annotated[
         bool, typer.Option("--no-verify", help="Skip archive checksum verification.")
     ] = False,
@@ -82,7 +89,14 @@ def pull(
     months = months_between(from_month, last)
     console.print(f"fetching {len(months)} month(s) of {market} {tf} from the Binance archive")
 
-    result = ingestor.pull(market, tf, months=months, allow_gaps=allow_gaps, verify=not no_verify)
+    result = ingestor.pull(
+        market,
+        tf,
+        months=months,
+        allow_gaps=allow_gaps,
+        off_grid="drop" if drop_off_grid else "error",
+        verify=not no_verify,
+    )
     console.print(result.summary())
     console.print(result.report.summary())
 
@@ -94,6 +108,13 @@ def update(
     timeframe: TimeframeOption = None,
     allow_gaps: Annotated[
         bool, typer.Option("--allow-gaps", help="Accept gaps longer than 3 bars.")
+    ] = False,
+    drop_off_grid: Annotated[
+        bool,
+        typer.Option(
+            "--drop-off-grid",
+            help="Discard bars whose open time is off the timeframe grid, leaving a gap.",
+        ),
     ] = False,
 ) -> None:
     """Extend the stored dataset to the latest closed bar using the ccxt REST API."""
@@ -109,7 +130,13 @@ def update(
     console.print(f"fetched {len(tail)} new closed bar(s) after {format_ts(manifest.end_ts)}")
 
     ingestor = BinanceArchiveIngestor(store, exchange=ctx.obj.config.market.exchange)
-    result = ingestor.rebuild(market, tf, extra_frames=[tail], allow_gaps=allow_gaps)
+    result = ingestor.rebuild(
+        market,
+        tf,
+        extra_frames=[tail],
+        allow_gaps=allow_gaps,
+        off_grid="drop" if drop_off_grid else "error",
+    )
     console.print(result.summary())
 
 

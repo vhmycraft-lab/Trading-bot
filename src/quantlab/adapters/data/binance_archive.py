@@ -30,7 +30,7 @@ from typing import Any, Final
 import numpy as np
 import pandas as pd
 
-from quantlab.core.data_validation import ValidationReport, normalise_bars
+from quantlab.core.data_validation import OffGridPolicy, ValidationReport, normalise_bars
 from quantlab.core.errors import DataError, DataValidationError, ManifestMismatchError
 from quantlab.core.hashing import canonical_json, file_sha256
 from quantlab.core.hashing import dataset_id as compute_dataset_id
@@ -525,7 +525,12 @@ class ParquetBarStore:
         return None if start is None or end is None else (start, end)
 
     def validate(self, symbol: str, timeframe: str) -> ValidationReport:
-        """Re-validate the whole stored dataset and return its report."""
+        """Re-validate the whole stored dataset and return its report.
+
+        Deliberately keeps the default ``off_grid="error"``: dropping off-grid
+        bars is an *ingestion* decision, and a stored dataset that still has
+        one is a defect in whatever wrote it, not something to re-forgive here.
+        """
         frame = self.read_frame(symbol, timeframe)
         _validated, report = normalise_bars(frame, timeframe, symbol=symbol, allow_gaps=True)
         return report
@@ -648,6 +653,7 @@ class BinanceArchiveIngestor:
         *,
         extra_frames: Sequence[pd.DataFrame] = (),
         allow_gaps: bool = False,
+        off_grid: OffGridPolicy = "error",
         built_at: str | None = None,
         include_stored: bool = True,
     ) -> IngestResult:
@@ -688,7 +694,9 @@ class BinanceArchiveIngestor:
             )
 
         merged = pd.concat(frames, ignore_index=True)
-        normalised, report = normalise_bars(merged, timeframe, symbol=symbol, allow_gaps=allow_gaps)
+        normalised, report = normalise_bars(
+            merged, timeframe, symbol=symbol, allow_gaps=allow_gaps, off_grid=off_grid
+        )
 
         entries = self.store.write_years(symbol, timeframe, normalised)
         manifest = Manifest(
@@ -720,6 +728,7 @@ class BinanceArchiveIngestor:
         *,
         months: Iterable[str],
         allow_gaps: bool = False,
+        off_grid: OffGridPolicy = "error",
         verify: bool = True,
         built_at: str | None = None,
     ) -> IngestResult:
@@ -729,7 +738,9 @@ class BinanceArchiveIngestor:
                 ArchiveFile(symbol=symbol, timeframe=timeframe, period=month, kind="monthly"),
                 verify=verify,
             )
-        return self.rebuild(symbol, timeframe, allow_gaps=allow_gaps, built_at=built_at)
+        return self.rebuild(
+            symbol, timeframe, allow_gaps=allow_gaps, off_grid=off_grid, built_at=built_at
+        )
 
 
 def _utc_now_iso() -> str:

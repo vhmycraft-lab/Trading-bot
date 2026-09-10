@@ -851,7 +851,7 @@ File layout: `data/binance/BTCUSDT/1h/year=YYYY/bars.parquet`. `data/binance/BTC
 
 ### 7.3 Validation (fail closed)
 
-`core/data_validation.validate_bars(df, timeframe) -> ValidationReport` raising `DataValidationError` on: non-monotonic `ts_open`; duplicate timestamps; OHLC inconsistency; negative volume; NaN anywhere. Gaps: runs of ≤ 3 missing bars are filled with `open=high=low=close=previous close`, `volume=0`, `is_gap_filled=True`; longer gaps raise unless `--allow-gaps`, in which case they are filled the same way and listed in the report. Strategies receive `is_gap_filled` and the engine never fills orders on gap-filled bars (order is deferred to the next real bar).
+`core/data_validation.validate_bars(df, timeframe) -> ValidationReport` raising `DataValidationError` on: non-monotonic `ts_open`; duplicate timestamps; OHLC inconsistency; negative volume; NaN anywhere. Gaps: runs of ≤ 3 missing bars are filled with `open=high=low=close=previous close`, `volume=0`, `is_gap_filled=True`; longer gaps raise unless `--allow-gaps`, in which case they are filled the same way and listed in the report. Strategies receive `is_gap_filled` and the engine never fills orders on gap-filled bars (order is deferred to the next real bar). Bars whose `ts_open` is not a multiple of the timeframe are rejected by default; `normalise_bars(off_grid="drop")` (CLI: `--drop-off-grid`) instead discards the run, records it as an `OffGridWindow` in the report, and leaves an ordinary gap — which a long one must still accept via `--allow-gaps`. `validate_bars` has no such policy: stored off-grid data is always an error. See ADR 0005.
 
 ### 7.4 Port
 

@@ -9,6 +9,9 @@ silently, with two deliberate exceptions that are recorded in the report:
   bars, so a synthetic bar can never become a synthetic trade
 * duplicate rows that agree on every field are collapsed, because exchange
   archives overlap at month boundaries by construction
+* bars whose ``ts_open`` is off the timeframe grid are dropped — but only when
+  the caller passes ``off_grid="drop"``, and the window they occupied is then a
+  gap like any other, so the engine will not trade on it
 
 Anything else — a longer gap, a duplicate timestamp with different data, an
 out-of-order row, an impossible OHLC relationship, a negative volume, a NaN —
@@ -18,7 +21,7 @@ is an error the caller must decide about.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 import pandas as pd
@@ -34,6 +37,8 @@ from quantlab.core.types import (
 __all__ = [
     "MAX_AUTO_FILL_BARS",
     "Gap",
+    "OffGridPolicy",
+    "OffGridWindow",
     "ValidationReport",
     "find_duplicates",
     "find_gaps",
@@ -46,6 +51,20 @@ MAX_AUTO_FILL_BARS: Final[int] = 3
 
 #: Rows this many bars apart or fewer are considered adjacent (no gap).
 _ADJACENT: Final[int] = 1
+
+#: What to do with bars whose ``ts_open`` is not a multiple of the timeframe.
+#:
+#: ``"error"`` is the default and the only safe choice for stored data.  An
+#: off-grid bar is a real observation the exchange published, but it cannot be
+#: placed on our grid without either fabricating its boundaries or colliding
+#: with the bar that legitimately owns that slot, so we refuse.
+#:
+#: ``"drop"`` is for ingesting a vendor archive that is known to contain such a
+#: run — see ``docs/DECISIONS/0005-off-grid-bars.md``.  It does not repair anything: it removes
+#: the rows and leaves a hole, which the ordinary gap machinery then has to
+#: account for.  A long hole still needs ``allow_gaps``, so accepting off-grid
+#: data takes two separate, deliberate acknowledgements.
+OffGridPolicy = Literal["error", "drop"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +90,27 @@ class Gap:
 
 
 @dataclass(frozen=True, slots=True)
+class OffGridWindow:
+    """A contiguous run of dropped bars whose ``ts_open`` was off the grid."""
+
+    #: Open time of the first dropped bar, as the vendor published it.
+    first_ts: int
+    #: Open time of the last dropped bar, as the vendor published it.
+    last_ts: int
+    #: How many bars were dropped.
+    n_bars: int
+    #: Their common offset from the grid, in milliseconds, when they share one.
+    offset_ms: int | None = None
+
+    def describe(self) -> str:
+        offset = "mixed offsets" if self.offset_ms is None else f"offset +{self.offset_ms}ms"
+        return (
+            f"{self.n_bars} off-grid bar(s) dropped between "
+            f"{format_ts(self.first_ts)} and {format_ts(self.last_ts)} ({offset})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationReport:
     """What validation found.  Attached to every ingestion and printed by the CLI."""
 
@@ -84,13 +124,26 @@ class ValidationReport:
     n_gap_filled_bars: int = 0
     #: Synthetic bars replaced by real ones that arrived later.
     n_gap_fills_superseded: int = 0
+    #: Bars discarded because their ``ts_open`` was off the timeframe grid.
+    n_off_grid_dropped: int = 0
     gaps_filled: tuple[Gap, ...] = field(default_factory=tuple)
     gaps_reported: tuple[Gap, ...] = field(default_factory=tuple)
+    off_grid_windows: tuple[OffGridWindow, ...] = field(default_factory=tuple)
 
     @property
     def ok(self) -> bool:
         """True when the series needed no repair beyond short gap fills."""
-        return not self.gaps_reported
+        return not self.gaps_reported and not self.off_grid_windows
+
+    @property
+    def n_short_gap_bars(self) -> int:
+        """Bars filled for gaps within the auto-fill limit.
+
+        ``n_gap_filled_bars`` counts every synthetic bar, including those filling
+        a long gap accepted via ``allow_gaps``; attributing that total to the
+        short gaps alone would overstate how routine the repair was.
+        """
+        return sum(gap.n_missing for gap in self.gaps_filled)
 
     @property
     def n_gaps(self) -> int:
@@ -103,13 +156,23 @@ class ValidationReport:
             f"  range           : {format_ts(self.start_ts)} .. {format_ts(self.end_ts)}",
             f"  duplicates      : {self.n_duplicates_dropped} dropped",
             f"  reordered rows  : {self.n_rows_reordered}",
-            f"  gap-filled bars : {self.n_gap_filled_bars} in {len(self.gaps_filled)} short gap(s)",
+            f"  gap-filled bars : {self.n_gap_filled_bars} total,"
+            f" {self.n_short_gap_bars} in {len(self.gaps_filled)} short gap(s)",
         ]
         if self.n_gap_fills_superseded:
             lines.append(
                 f"  superseded fills: {self.n_gap_fills_superseded}"
                 " (real bars arrived for previously filled gaps)"
             )
+        if self.off_grid_windows:
+            lines.append(
+                f"  off-grid bars   : {self.n_off_grid_dropped} dropped"
+                f" in {len(self.off_grid_windows)} window(s) (accepted via off_grid='drop')"
+            )
+            for window in self.off_grid_windows[:10]:
+                lines.append(f"      {window.describe()}")
+            if len(self.off_grid_windows) > 10:
+                lines.append(f"      ... and {len(self.off_grid_windows) - 10} more")
         if self.gaps_reported:
             lines.append(f"  long gaps       : {len(self.gaps_reported)} (accepted via allow_gaps)")
             for gap in self.gaps_reported[:10]:
@@ -326,12 +389,43 @@ def _fill_gap(previous: pd.Series, timestamps: list[int]) -> list[dict[str, obje
     ]
 
 
+def _split_off_grid(
+    frame: pd.DataFrame, bar_ms: int
+) -> tuple[pd.DataFrame, tuple[OffGridWindow, ...]]:
+    """Remove off-grid rows, describing each contiguous run that was removed.
+
+    Runs are grouped by adjacency in the *frame*, not by timestamp arithmetic:
+    consecutive dropped rows are one window, which is how an outage actually
+    looks in a vendor archive.
+    """
+    ts = frame["ts_open"].to_numpy()
+    off = np.flatnonzero(ts % bar_ms != 0)
+    if not off.size:
+        return frame, ()
+
+    windows: list[OffGridWindow] = []
+    for run in np.split(off, np.flatnonzero(np.diff(off) != 1) + 1):
+        offsets = {int(value) % bar_ms for value in ts[run]}
+        windows.append(
+            OffGridWindow(
+                first_ts=int(ts[run[0]]),
+                last_ts=int(ts[run[-1]]),
+                n_bars=int(run.size),
+                offset_ms=offsets.pop() if len(offsets) == 1 else None,
+            )
+        )
+
+    kept = frame.drop(index=frame.index[off]).reset_index(drop=True)
+    return kept, tuple(windows)
+
+
 def normalise_bars(
     df: pd.DataFrame,
     timeframe: str,
     *,
     symbol: str = "",
     allow_gaps: bool = False,
+    off_grid: OffGridPolicy = "error",
 ) -> tuple[pd.DataFrame, ValidationReport]:
     """Sort, de-duplicate, gap-fill and validate a raw bar frame.
 
@@ -344,6 +438,10 @@ def normalise_bars(
         symbol: Recorded in the report; does not affect validation.
         allow_gaps: When true, gaps longer than :data:`MAX_AUTO_FILL_BARS` are
             filled the same way and listed in the report instead of raising.
+        off_grid: ``"error"`` (the default) refuses bars whose ``ts_open`` is
+            not on the timeframe grid.  ``"drop"`` discards them and records
+            each run in the report; the hole is then an ordinary gap, so a long
+            one still needs ``allow_gaps``.
 
     Returns:
         The normalised frame and its report.
@@ -363,17 +461,24 @@ def normalise_bars(
     frame, n_superseded = _supersede_gap_fills(frame)
     frame, n_duplicates = _dedupe(frame)
 
-    ts = frame["ts_open"].to_numpy()
-    misaligned = np.flatnonzero(ts % bar_ms != 0) if ts.size else np.empty(0, dtype=int)
-    if misaligned.size:
-        row = int(misaligned[0])
-        raise DataValidationError(
-            "ts_open is not aligned to the timeframe grid",
-            row=row,
-            ts=format_ts(int(ts[row])),
-            timeframe=timeframe,
-        )
+    off_grid_windows: tuple[OffGridWindow, ...] = ()
+    if len(frame):
+        if off_grid == "drop":
+            frame, off_grid_windows = _split_off_grid(frame, bar_ms)
+        else:
+            ts = frame["ts_open"].to_numpy()
+            misaligned = np.flatnonzero(ts % bar_ms != 0)
+            if misaligned.size:
+                row = int(misaligned[0])
+                raise DataValidationError(
+                    "ts_open is not aligned to the timeframe grid",
+                    row=row,
+                    ts=format_ts(int(ts[row])),
+                    timeframe=timeframe,
+                    hint="pass off_grid='drop' to discard the run and leave a gap instead",
+                )
 
+    ts = frame["ts_open"].to_numpy()
     gaps = find_gaps(ts, bar_ms)
     long_gaps = tuple(gap for gap in gaps if gap.n_missing > MAX_AUTO_FILL_BARS)
     if long_gaps and not allow_gaps:
@@ -407,6 +512,8 @@ def normalise_bars(
         n_rows_reordered=n_reordered,
         n_gap_fills_superseded=n_superseded,
         n_gap_filled_bars=int(frame["is_gap_filled"].to_numpy().sum()),
+        n_off_grid_dropped=sum(window.n_bars for window in off_grid_windows),
         gaps_filled=short_gaps,
         gaps_reported=long_gaps,
+        off_grid_windows=off_grid_windows,
     )
