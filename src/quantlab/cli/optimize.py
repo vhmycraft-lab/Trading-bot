@@ -66,7 +66,7 @@ def _services(
         allowed_imports=config.sandbox.allowed_imports,
     )
     loader = StrategyLoader(
-        SqliteExperimentStore(container.session_factory),
+        container.store,
         FileSourceStore(Path("strategies") / FileSourceStore.DEFAULT_SUBDIR),
         allowed_imports=config.sandbox.allowed_imports,
         sandbox=SandboxRunner(limits=limits),
@@ -74,7 +74,7 @@ def _services(
         engine_class=ENGINE_CLASS,
     )
     return (
-        SqliteExperimentStore(container.session_factory),
+        container.store,
         FileArtifactStore(config.project.artifacts_dir),
         loader,
     )

@@ -30,7 +30,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from quantlab.adapters.data.binance_archive import ParquetBarStore
 from quantlab.adapters.data.guard import PartitionGuard
 from quantlab.adapters.secrets import ChainedSecrets, DotEnvSecrets, KeychainSecrets
-from quantlab.adapters.store.sqlite import create_db_engine, make_session_factory
+from quantlab.adapters.store.sqlite import (
+    SqliteExperimentStore,
+    create_db_engine,
+    make_session_factory,
+)
 from quantlab.core.config import AppConfig
 from quantlab.core.errors import ConfigError
 from quantlab.core.splits import SplitPolicy, load_split_policy
@@ -75,6 +79,19 @@ class Container:
     def may_read_test_partition(self) -> bool:
         """True only for the ``lockbox`` profile (INV-5)."""
         return self.profile == "lockbox"
+
+    @property
+    def store(self) -> SqliteExperimentStore:
+        """The experiment store for this container's session factory.
+
+        Here rather than at each call site because ``container.py`` is one of
+        the few modules INV-8 permits to import an adapter, and every caller
+        that built its own ``SqliteExperimentStore(...)`` was reaching past this
+        boundary to do it. ``quantlab.dashboard`` made that visible: it is not on
+        the adapter-importer list, so the architecture test refused it — which is
+        the test working, not the dashboard being awkward.
+        """
+        return SqliteExperimentStore(self.session_factory)
 
 
 def build_secrets(*, env_file: str = ".env") -> Secrets:

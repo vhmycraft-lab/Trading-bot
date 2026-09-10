@@ -70,7 +70,7 @@ def _services(
     container = state.container
     config = state.config
     _require_migrated(container)
-    store = SqliteExperimentStore(container.session_factory)
+    store = container.store
     artifacts = FileArtifactStore(config.project.artifacts_dir)
     limits = SandboxLimits(
         cpu_seconds=config.sandbox.cpu_seconds,

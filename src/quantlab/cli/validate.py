@@ -66,7 +66,7 @@ def _services(ctx: typer.Context) -> tuple[Any, SqliteExperimentStore, StrategyL
             "the experiment database is not migrated; run `quantlab db upgrade`",
             missing_tables=list(missing),
         )
-    store = SqliteExperimentStore(container.session_factory)
+    store = container.store
     limits = SandboxLimits(
         cpu_seconds=config.sandbox.cpu_seconds,
         memory_mb=config.sandbox.memory_mb,

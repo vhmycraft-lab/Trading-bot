@@ -80,7 +80,7 @@ def _services(ctx: typer.Context) -> tuple[SqliteExperimentStore, FileArtifactSt
             missing_tables=list(missing),
         )
     return (
-        SqliteExperimentStore(state.container.session_factory),
+        state.container.store,
         FileArtifactStore(state.config.project.artifacts_dir),
     )
 

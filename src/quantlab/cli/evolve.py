@@ -101,7 +101,7 @@ def _wiring(
     state = ctx.obj
     container, config = state.container, state.config
     _require_migrated(container)
-    store = SqliteExperimentStore(container.session_factory)
+    store = container.store
     limits = SandboxLimits(
         cpu_seconds=config.sandbox.cpu_seconds,
         memory_mb=config.sandbox.memory_mb,

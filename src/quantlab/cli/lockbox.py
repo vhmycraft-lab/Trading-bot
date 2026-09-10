@@ -190,7 +190,7 @@ def evaluate_lockbox(
             "the experiment database is not migrated; run `quantlab db upgrade`",
             missing_tables=list(missing),
         )
-    store = SqliteExperimentStore(research.session_factory)
+    store = research.store
 
     version = store.get_strategy_version(strategy_id)
     if version is None:
