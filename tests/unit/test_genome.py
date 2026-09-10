@@ -359,7 +359,14 @@ def test_the_genome_id_ignores_how_the_genome_was_spelled() -> None:
 def test_the_genome_id_changes_when_the_structure_does() -> None:
     ids = {
         genome_id(crossover()),
-        genome_id(crossover(warmup_bars=401)),
+        # A different lookback, not a hand-set warm-up: warm-up is derived from
+        # the structure now (ADR 0007), so it cannot be varied independently.
+        genome_id(
+            crossover(
+                params={**PARAMS, "slow": ParamSpec(kind="int", default=200, low=20, high=399)},
+                warmup_bars=399,
+            )
+        ),
         genome_id(crossover(sizing=SizingSpec(fraction=0.5))),
         genome_id(crossover(risk=RiskSpec(stop_loss_pct=0.02))),
         genome_id(

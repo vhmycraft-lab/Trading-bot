@@ -447,31 +447,31 @@ class StrategyGenome(BaseModel):
                 )
 
     def _check_warmup(self) -> None:
-        """Warm-up must cover the indicators (spec 9.6 rule 6).
+        """Warm-up is derived from the indicators, not chosen (spec 9.6 rule 6).
 
-        Rule 6 is a lower bound only, and that is a known, measured weakness
-        rather than a settled design. Warm-up bars are excluded from every
-        metric, so a warm-up *longer* than the structure requires lets a
-        candidate choose which suffix of the evaluation window it is judged on.
-        On a curve that falls for a thousand bars and then rises, declaring 900
-        bars of warm-up instead of 0 moved fitness from 0.078 to 0.296 and max
-        drawdown from 0.39 to 0.05 — identical trades, identical equity.
+        Rule 6 was read as a lower bound, on the reasoning that a longer warm-up
+        is "strictly more conservative". It is not. Warm-up bars are excluded
+        from every metric, so a longer one lets a candidate choose which suffix
+        of the evaluation window it is judged on. On a curve that falls for a
+        thousand bars and then rises, declaring 900 bars of warm-up rather than 0
+        moved fitness from 0.078 to 0.296 and max drawdown from 0.39 to 0.05 —
+        identical trades, identical equity.
 
-        Closing it by making the bound exact is a one-line change here, but it
-        forces `strategies/baselines/rsi_reversion.py` (which declares a round
-        60 where its indicators need 51) either to change — regenerating a
-        golden baseline — or to diverge from its compiled genome twin. That is
-        a decision about scoring, not a bug fix, so it is recorded rather than
-        taken unilaterally. See docs/DECISIONS/0007-warmup-is-not-free.md.
-
-        What *is* fixed is the ratchet: mutation no longer carries a warm-up
-        forward once the structure that justified it is gone.
+        So the bound is exact in both directions. A genome may not trade before
+        its indicators are defined, and may not decline to be measured on bars
+        where they are. See ADR 0007.
         """
         needed = self.max_lookback()
         if self.warmup_bars < needed:
             raise ValueError(
                 f"warmup_bars is {self.warmup_bars} but the indicators need {needed}; "
                 "a strategy trading before its own indicators are defined is trading on NaN"
+            )
+        if self.warmup_bars > needed:
+            raise ValueError(
+                f"warmup_bars is {self.warmup_bars} but the indicators need only {needed}; "
+                "warm-up bars are excluded from every metric, so a longer warm-up "
+                "selects the period the candidate is scored on"
             )
 
     # -- identity -----------------------------------------------------------

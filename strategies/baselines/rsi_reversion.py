@@ -17,7 +17,10 @@ class RsiReversion:
         "oversold": ParamSpec(kind="float", default=30.0, low=5.0, high=45.0),
         "exit_level": ParamSpec(kind="float", default=55.0, low=46.0, high=90.0),
     }
-    warmup_bars = 60
+    # rsi(n) needs n+1 prices and `n` tops out at 50. Exactly 51, not a round
+    # 60: the nine-bar difference was excluded from every metric, which is
+    # score a strategy can claim by declaring warm-up it does not need.
+    warmup_bars = 51
 
     # Declared explicitly: risk controls are engine behaviour (spec section 8.6),
     # and a candidate overrides these without touching this file.

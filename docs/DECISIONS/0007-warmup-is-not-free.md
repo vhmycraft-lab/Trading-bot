@@ -1,6 +1,6 @@
 # 7. A declared warm-up selects the period a candidate is scored on
 
-* **Status:** Proposed — the ratchet is fixed; the bound is a decision for the project owner
+* **Status:** Accepted — both halves taken (option (a))
 * **Date:** 2026-09-10
 
 ## Context
@@ -39,50 +39,67 @@ ratchet only ever turns one way.
 
 ## Decision
 
-Two halves, and only the first is taken here.
+**Both halves are taken.** Option (a): the bound is exact.
 
-**Fixed:** the ratchet. `_compile` now recomputes `warmup_bars` from the
-conditions actually present, so warm-up follows the structure in both
-directions and cannot drift upward across generations.
+1. `MutationPlan._compile` recomputes `warmup_bars` from the conditions actually
+   present instead of `max(existing, required)`, so warm-up follows structure in
+   both directions and cannot ratchet upward across generations.
+2. `StrategyGenome._check_warmup` refuses a warm-up above the structural need as
+   well as below it. Warm-up is derived, not chosen.
+3. `strategies/baselines/rsi_reversion.py` declared a round `warmup_bars = 60`
+   where `rsi(n<=50)` needs 51. It is now 51, and its compiled genome twin is 51,
+   so the bar-for-bar parity test compares two exact values rather than two
+   arbitrary ones.
 
-**Not taken:** making rule 6 an exact bound. It is a one-line change in
-`StrategyGenome._check_warmup`, and it fully removes the free parameter for
-evolved candidates. But `strategies/baselines/rsi_reversion.py` declares a round
-`warmup_bars = 60` where `rsi(n<=50)` needs 51, and it is a **golden baseline**.
-Exactness therefore forces one of:
+### Regenerating the rsi_reversion golden
 
-1. change the baseline to 51 — which changes its results and requires
-   regenerating a golden baseline; or
-2. leave the baseline at 60 and let it diverge from its compiled genome twin —
-   which breaks the bar-for-bar parity test that exists to prove the compiler is
-   faithful.
+The old golden froze the 60. That is a preservation order around a value we now
+know was wrong, not a regression guard, so it was regenerated — and the change
+was shown to be confined before it was accepted:
 
-Both are decisions about how candidates are scored, not bug fixes, and the
-second would weaken a real test. Recorded rather than taken unilaterally.
+* **No trade moved.** All five golden trade ledgers, old bytes against new, are
+  identical under `assert_frame_equal(check_exact=True)`. The first
+  `rsi_reversion` trade occurs well after bar 60, so measuring from bar 51
+  cannot reach it.
+* **All five `trades.parquet` files changed bytes** — that is pyarrow 23
+  re-encoding what pyarrow 17 wrote (ADR 0006), not a logic change, which is why
+  the logical comparison above was required to accept it.
+* **Only `rsi_reversion/metrics.json` changed**, in 8 of 45 fields, every one of
+  them a function of the bar count:
 
-## Options for the owner
+  | field | 60 | 51 |
+  | --- | ---: | ---: |
+  | `ann_volatility` | 0.12192561693209647 | 0.12152240784022499 |
+  | `cagr` | -0.008694863327745939 | -0.008637741024603018 |
+  | `calmar` | -0.1632892833299457 | -0.16221652811910772 |
+  | `exposure` | 0.11283185840707964 | 0.11208791208791209 |
+  | `sharpe` | -0.010603998397598067 | -0.010568982384311188 |
+  | `sharpe_ci_low` | -0.06385044759192161 | -0.06363946457239664 |
+  | `sharpe_ci_high` | 0.042642450796725476 | 0.04250149980377427 |
+  | `sortino` | -0.014405879089447746 | -0.014358273704336335 |
 
-* **(a) Exact bound.** Warm-up becomes fully derived; the free parameter is gone
-  for every evolved candidate. Cost: regenerate the `rsi_reversion` golden, with
-  the change stated as warm-up-only and the equivalence shown.
-* **(b) Uniform scoring window.** Exclude the *population's* maximum warm-up from
-  every candidate's metrics in a generation, so all candidates are measured over
-  identical bars. Strictly the most correct — comparability is the property
-  fitness needs — and it leaves hand-written warm-ups alone. Larger change:
-  fitness becomes a function of the population, not of one run.
-* **(c) Score the warm-up bars.** Include them with flat equity. Declaring a
-  longer warm-up then costs flat bars instead of deleting bad ones, so the
-  incentive inverts with no threshold anywhere. Changes every existing metric.
+  `net_return`, `max_drawdown`, `n_trades` and 34 other fields are unchanged:
+  equity is flat until the first trade, so moving the start from bar 60 to bar 51
+  changes the denominator without changing the endpoints.
 
-Recommendation: **(a)** now, because it is small and closes the reachable path,
-with **(b)** if hand-written strategies ever compete directly against evolved
-ones in the same ranking.
+`engine_version` is **not** bumped. The engine's fill and accounting rules are
+untouched; what changed is one strategy's declared warm-up and the window its
+metrics are computed over.
+
+### What is not closed
+
+Opaque, hand-written strategies declare `warmup_bars` as a class attribute, and
+no lookback is computable from arbitrary source, so `ast_check` can only require
+that it is a non-negative int literal. A hand-written strategy can therefore
+still over-declare. Evolution produces genomes, so the search — the threat model
+here — is closed; a hand-written strategy over-declaring is a review matter.
 
 ## Consequences
 
-* The ratchet is gone, so the exploit is no longer produced by ordinary drift.
-  A candidate must now declare an over-long warm-up in its own source to get it,
-  which for a genome means a hand-authored genome rather than an evolved one.
-* Until (a), (b) or (c) is taken, a hand-written strategy can still buy score by
-  declaring warm-up it does not need, and `tests/unit/test_fitness_adversarial.py`
-  records that as a known-open hole rather than asserting it is closed.
+* No genome, evolved or hand-authored, can buy score by declaring warm-up it
+  does not need. The adversarial suite asserts the refusal in both directions,
+  and separately keeps measuring what the choice used to be worth (fitness 0.078
+  against 0.296) so the prize is on record if a route to setting it reappears.
+* Option (b), a population-uniform scoring window, remains the stronger answer if
+  hand-written strategies ever compete directly against evolved ones in one
+  ranking. It is not needed while they do not.

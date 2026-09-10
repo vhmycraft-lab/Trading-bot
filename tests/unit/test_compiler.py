@@ -93,7 +93,9 @@ def rsi_reversion_genome() -> StrategyGenome:
             "oversold": ParamSpec(kind="float", default=30.0, low=5.0, high=45.0),
             "exit_level": ParamSpec(kind="float", default=55.0, low=46.0, high=90.0),
         },
-        warmup_bars=60,
+        # Exactly what rsi(n<=50) implies, matching the baseline it is compared
+        # against bar for bar. Both sides exact rather than both arbitrary.
+        warmup_bars=51,
     )
 
 

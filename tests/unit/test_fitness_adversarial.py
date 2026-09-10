@@ -285,19 +285,36 @@ def a_curve_that_falls_then_rises(n: int = 2000) -> list[float]:
     return equity
 
 
-def test_declaring_warm_up_still_buys_score_and_that_is_recorded(settings) -> None:
-    """A KNOWN-OPEN hole, pinned so it cannot widen unnoticed (ADR 0007).
+def test_a_genome_cannot_declare_warm_up_it_does_not_need() -> None:
+    """CLOSED (ADR 0007). Warm-up is derived from the structure, both ways.
 
     Warm-up bars are excluded from every metric, so declaring more of them
-    deletes the bars a candidate would be judged on. This test asserts the
-    exploit *still works*, because closing it means either regenerating a golden
-    baseline or breaking the compiler's bar-for-bar parity test — a decision for
-    the project owner, recorded in ADR 0007 rather than taken here.
+    deletes the bars a candidate would be judged on. Rule 6 used to bound it
+    from below only, and the excess was free score.
+    """
+    from pydantic import ValidationError as PydanticValidationError
+    from tests.unit.test_compiler import rsi_reversion_genome
 
-    When that decision is taken, this test must be replaced by its inverse. It
-    exists so the hole is impossible to forget and so its size is measured: if a
-    future change makes warm-up *more* profitable, the recorded numbers move and
-    this fails.
+    from quantlab.core.genome import StrategyGenome
+
+    honest = rsi_reversion_genome()
+    needed = honest.max_lookback()
+    assert honest.warmup_bars == needed
+
+    with pytest.raises(PydanticValidationError, match="need only"):
+        StrategyGenome.model_validate({**honest.model_dump(mode="json"), "warmup_bars": needed + 9})
+    with pytest.raises(PydanticValidationError, match="indicators need"):
+        StrategyGenome.model_validate({**honest.model_dump(mode="json"), "warmup_bars": needed - 1})
+
+
+def test_the_metric_window_is_still_sensitive_to_warm_up(settings) -> None:
+    """Why the bound above has to be exact, kept measurable.
+
+    The sensitivity itself is not a bug — warm-up must be excluded, or a
+    strategy is scored on bars where its indicators were NaN. What was a bug is
+    that a candidate could choose the number. This records how much the choice
+    was worth, so that if a future change reintroduces a way to set it, the size
+    of the prize is already written down.
     """
     equity = a_curve_that_falls_then_rises()
     trades = [a_trade(10.0, 0.001, i) for i in range(40)]
@@ -310,9 +327,8 @@ def test_declaring_warm_up_still_buys_score_and_that_is_recorded(settings) -> No
     honest_metrics, honest = at(0)
     trimmed_metrics, trimmed = at(900)
 
-    assert trimmed.fitness > honest.fitness, "ADR 0007 describes this hole; it is still open"
+    assert trimmed.fitness > honest.fitness
     assert trimmed_metrics.max_drawdown < honest_metrics.max_drawdown
-    # the measured size of the hole, so a regression that widens it is visible
     assert honest.fitness == pytest.approx(0.078220, abs=1e-5)
     assert trimmed.fitness == pytest.approx(0.295525, abs=1e-5)
 
