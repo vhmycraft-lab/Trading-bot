@@ -31,6 +31,7 @@ from quantlab.adapters.store.artifacts import FileArtifactStore, FileSourceStore
 from quantlab.adapters.store.sqlite import SqliteExperimentStore, missing_tables
 from quantlab.core.environment import EnvironmentSelector, build_window_pool, sampling_report
 from quantlab.core.errors import ConfigError, StoreError
+from quantlab.core.fitness import FITNESS_REJECTED
 from quantlab.core.genome import StrategyGenome
 from quantlab.core.hashing import short_id
 from quantlab.core.types import BacktestConfig, SlippageConfig
@@ -439,12 +440,17 @@ def promote_command(
     for record in promotions:
         table.add_row(record.candidate_id, record.promotion_id, str(record.touches))
     console.print(table)
-    if not promotions:
-        console.print(
-            "[yellow]nothing was promoted[/yellow]: no candidate reached "
-            f"promotion.min_fitness ({settings.min_fitness})"
+    if promotions:
+        console.print("[dim]a validation run may now be created for these candidates only[/dim]")
+    else:
+        gated = sum(1 for c in candidates if c.fitness <= FITNESS_REJECTED)
+        cause = (
+            f"every one of the {gated} candidates was rejected by a fitness gate"
+            if gated == len(candidates)
+            else f"no candidate reached promotion.min_fitness ({settings.min_fitness})"
         )
-    console.print("[dim]a validation run may now be created for these candidates only[/dim]")
+        console.print(f"[yellow]nothing was promoted[/yellow]: {cause}")
+        console.print("[dim]no validation run may be created from this generation[/dim]")
     del row
 
 
