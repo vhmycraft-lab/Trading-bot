@@ -4,6 +4,15 @@
 # actually uses (for example `GLM_API_KEY=<hex>`), so the rules below mirror the
 # regexes in `tests/unit/test_no_secrets.py`.  The two enforcements are meant to
 # agree: the hook stops a commit, the test stops a build.
+#
+# The separator is `[ \t]*`, not `\s*`.  `\s` matches a newline, so the value
+# group would run on to the *next* line and read the following variable's name
+# as this one's value: `.env.example` has `BINANCE_API_KEY=` on one line and
+# `BINANCE_API_SECRET=` on the next, and the pair matched as one assignment of a
+# secret to an eighteen-character "value".  A scanner that flags the file whose
+# entire purpose is to hold empty placeholders is one people learn to
+# `--no-verify` past, and the two enforcements stopped agreeing: the test passed
+# and the hook did not.
 
 title = "QuantLab"
 
@@ -13,14 +22,14 @@ useDefault = true
 [[rules]]
 id = "quantlab-named-secret"
 description = "A QuantLab secret name assigned a long opaque value"
-regex = '''(?i)(GLM_API_KEY|BINANCE_API_KEY|BINANCE_API_SECRET)\s*[:=]\s*["']?([A-Za-z0-9+/_\-]{16,})'''
+regex = '''(?i)(GLM_API_KEY|BINANCE_API_KEY|BINANCE_API_SECRET)[ \t]*[:=][ \t]*["']?([A-Za-z0-9+/_\-]{16,})'''
 tags = ["quantlab", "secret"]
 entropy = 2.5
 
 [[rules]]
 id = "quantlab-generic-credential-assignment"
 description = "A credential-shaped name assigned a long opaque value"
-regex = '''(?i)(api[_-]?key|apikey|secret|token|password|passwd|authorization|bearer)\s*[:=]\s*["']?([A-Za-z0-9+/_\-]{20,})'''
+regex = '''(?i)(api[_-]?key|apikey|secret|token|password|passwd|authorization|bearer)[ \t]*[:=][ \t]*["']?([A-Za-z0-9+/_\-]{20,})'''
 tags = ["quantlab", "secret"]
 entropy = 2.5
 
