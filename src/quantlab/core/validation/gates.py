@@ -18,6 +18,7 @@ rejection can be read and argued with rather than merely obeyed.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -49,6 +50,26 @@ GATE_IDS: Final[tuple[str, ...]] = (
 )
 
 _EPS: Final[float] = 1e-12
+
+
+def _measured(value: float | None) -> float | None:
+    """``value`` if it is an actual measurement, else ``None``.
+
+    NaN and ±inf are not measurements, and a gate that compares them directly
+    gets the wrong answer in one of the two directions for free: every NaN
+    comparison is False, so NaN happens to fail closed, while ``+inf`` compares
+    greater than any threshold and **passes**. An infinite validation Sharpe
+    sailed through ``G_DEGRADE`` and an infinite Sortino beat buy-and-hold at
+    ``G_BENCH``.
+
+    Funnelling both into ``None`` gives them the treatment this module already
+    gives an absent measurement — a failure — and makes the two cases agree
+    instead of differing by an accident of IEEE comparison.
+    """
+    if value is None:
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,8 +225,14 @@ def _sanity(inputs: GateInputs, settings: ValidationSettings) -> GateResult:
     with the market until the next rebalance. The exact invariant is the engine's
     and is checked by its property tests; this one catches the gross case.
     """
+    # A non-finite trade return is not "no impossible trade", it is an
+    # impossible trade, so NaN is mapped to infinity rather than skipped.
     worst_trade = max(
-        (abs(trade.pnl_pct) for trade in (*inputs.trades_train, *inputs.trades_val)), default=0.0
+        (
+            abs(trade.pnl_pct) if math.isfinite(trade.pnl_pct) else math.inf
+            for trade in (*inputs.trades_train, *inputs.trades_val)
+        ),
+        default=0.0,
     )
     fractions = np.abs(np.asarray(inputs.position_frac_val, dtype="float64"))
     worst_position = float(fractions.max()) if fractions.size else 0.0
@@ -240,7 +267,7 @@ def _cost(inputs: GateInputs, settings: ValidationSettings) -> GateResult:
     all.
     """
     stressed = inputs.metrics_val_stressed
-    observed = None if stressed is None else stressed.net_return
+    observed = None if stressed is None else _measured(stressed.net_return)
     passed = observed is not None and observed > 0.0
     return GateResult(
         gate_id="G_COST",
@@ -261,7 +288,7 @@ def _permutation(inputs: GateInputs, settings: ValidationSettings) -> GateResult
     A p-value that was never computed fails, for the same reason ``G_LEAK`` does:
     the gate asks for evidence, and an absent measurement is not evidence.
     """
-    p_value = inputs.permutation_p
+    p_value = _measured(inputs.permutation_p)
     alpha = settings.permutation.alpha
     passed = p_value is not None and p_value <= alpha
     return GateResult(
@@ -289,7 +316,8 @@ def _degrade(inputs: GateInputs, settings: ValidationSettings) -> GateResult:
     let a strategy that lost money on both segments pass by losing slightly less
     on one. Only the sign test then applies.
     """
-    sharpe_val, sharpe_train = inputs.metrics_val.sharpe, inputs.metrics_train.sharpe
+    sharpe_val = _measured(inputs.metrics_val.sharpe)
+    sharpe_train = _measured(inputs.metrics_train.sharpe)
     positive = sharpe_val is not None and sharpe_val > 0.0
     if not positive:
         ratio_ok, floor = False, None
@@ -330,11 +358,13 @@ def _benchmark(inputs: GateInputs) -> GateResult:
             reason="no buy-and-hold baseline was measured on the validation segment",
         )
 
-    sortino, sortino_bh = inputs.metrics_val.sortino, baseline.sortino
+    sortino = _measured(inputs.metrics_val.sortino)
+    sortino_bh = _measured(baseline.sortino)
     beats_return = sortino is not None and sortino_bh is not None and sortino > sortino_bh
 
-    drawdown, drawdown_bh = inputs.metrics_val.max_drawdown, baseline.max_drawdown
-    net = inputs.metrics_val.net_return
+    drawdown = _measured(inputs.metrics_val.max_drawdown)
+    drawdown_bh = _measured(baseline.max_drawdown)
+    net = _measured(inputs.metrics_val.net_return)
     beats_risk = (
         drawdown is not None
         and drawdown_bh is not None

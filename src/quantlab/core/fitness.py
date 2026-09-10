@@ -231,7 +231,14 @@ def _components(
         "trades": _clip(math.log1p(metrics.n_trades) / math.log1p(targets.trades)),
         "win_rate": _win_rate_component(metrics.win_rate, settings),
         "net_return": _ratio(metrics.cagr, targets.cagr),
-        "concentration": _clip(1.0 - (metrics.top5_profit_share or 0.0)),
+        # `None` means there were no winning trades at all, which is the worst
+        # possible concentration rather than the best. It used to read 1.0 —
+        # `1.0 - 0.0` — for maximum credit, reachable only because F_EXPECTANCY
+        # rejects such a ledger first. A component should not depend on a distant
+        # gate for its safety, and unmeasured earns no credit anywhere else here.
+        "concentration": (
+            0.0 if metrics.top5_profit_share is None else _clip(1.0 - metrics.top5_profit_share)
+        ),
     }
 
 

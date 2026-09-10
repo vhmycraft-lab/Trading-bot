@@ -46,8 +46,7 @@ DEFAULT_CONSISTENCY_BARS: Final[int] = 720
 _EPS: Final[float] = 1e-12
 _Z95: Final[float] = 1.959963984540054
 
-#: Downside deviation below this fraction of the return RMS is float noise, not
-#: risk.
+#: Dispersion below this fraction of the return RMS is float noise, not risk.
 #:
 #: The guard it replaces was an absolute ``1e-12`` applied to a scale-dependent
 #: quantity: per-bar returns are of order 1e-3, so almost any downside at all
@@ -57,9 +56,16 @@ _Z95: Final[float] = 1.959963984540054
 #: meaningless loss raised fitness by 31 %, so the search was paid to inject one.
 #:
 #: Comparing against the RMS of the same series makes the test scale-invariant:
-#: it asks whether the downside is measurable *at the scale of the returns*,
+#: it asks whether the dispersion is measurable *at the scale of the returns*,
 #: which is the question, rather than whether it exceeds a fixed constant.
-_MIN_DOWNSIDE_FRACTION: Final[float] = 1e-3
+#:
+#: Sharpe carried the identical defect and it mattered more, because Sharpe is
+#: what the deflated Sharpe ratio deflates. An equity curve drifting 1e-6 per bar
+#: — annualised volatility 5.4e-08, flat to within float noise — produced a
+#: Sharpe of 162,313, and ``deflated_sharpe`` then reported **1.0 even at 1000
+#: trials**. The one defence against multiple testing returned maximum
+#: confidence for a curve that does nothing.
+_MIN_DISPERSION_FRACTION: Final[float] = 1e-3
 
 
 class MetricSet(BaseModel):
@@ -305,24 +311,29 @@ def compute_metrics(
     rf_bar = rf_annual / float(result.bars_per_year) if result.bars_per_year else 0.0
     excess = returns - rf_bar
 
+    # The scale every dispersion test below is measured against.
+    scale = float(math.sqrt(float(np.mean(excess**2)))) if excess.size else 0.0
+
     sharpe: float | None = None
     ann_volatility: float | None = None
     if excess.size >= 2:
         deviation = float(np.std(excess, ddof=1))
         ann_volatility = deviation * math.sqrt(result.bars_per_year)
-        if deviation > _EPS:
+        # Relative, not absolute: see _MIN_DISPERSION_FRACTION. A curve whose
+        # returns barely vary has no measurable Sharpe, and reporting the ratio
+        # anyway hands the deflated Sharpe an unbounded input.
+        if deviation > max(_EPS, _MIN_DISPERSION_FRACTION * scale):
             sharpe = float(np.mean(excess)) / deviation * math.sqrt(result.bars_per_year)
 
     sortino: float | None = None
     if excess.size >= 1:
         downside = np.minimum(excess, 0.0)
         downside_deviation = float(math.sqrt(float(np.mean(downside**2))))
-        # Relative, not absolute: see _MIN_DOWNSIDE_FRACTION. A downside that is
-        # negligible against the returns' own scale is not a small risk, it is an
-        # unmeasured one, and it is reported as undefined rather than as a ratio
-        # whose size is an artefact of the one bar in the denominator.
-        scale = float(math.sqrt(float(np.mean(excess**2))))
-        if downside_deviation > max(_EPS, _MIN_DOWNSIDE_FRACTION * scale):
+        # Relative, not absolute: see _MIN_DISPERSION_FRACTION. A downside that
+        # is negligible against the returns' own scale is not a small risk, it is
+        # an unmeasured one, and it is reported as undefined rather than as a
+        # ratio whose size is an artefact of the one bar in the denominator.
+        if downside_deviation > max(_EPS, _MIN_DISPERSION_FRACTION * scale):
             sortino = float(np.mean(excess)) / downside_deviation * math.sqrt(result.bars_per_year)
 
     sharpe_low, sharpe_high = _sharpe_ci(sharpe, int(excess.size))
