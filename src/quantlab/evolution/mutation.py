@@ -150,9 +150,13 @@ class Phenotype:
                 "params": dict(self.schema),
                 "risk": self.risk,
                 "sizing": self.sizing,
-                "warmup_bars": max(
-                    self.genome.warmup_bars, required_warmup(conditions, self.schema)
-                ),
+                # Recomputed, never ratcheted. This was `max(existing, required)`,
+                # which could only ever rise: a lineage that once held a
+                # long-lookback indicator kept its warm-up after mutating that
+                # indicator away, and was thereafter scored on a shorter, later
+                # window than its competitors. Warm-up follows the structure that
+                # is actually there.
+                "warmup_bars": required_warmup(conditions, self.schema),
             }
         )
         return replace(self, genome=StrategyGenome.model_validate(updated.model_dump()))

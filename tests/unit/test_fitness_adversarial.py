@@ -272,3 +272,86 @@ def test_a_profitable_concentrated_ledger_is_still_measured_normally(settings) -
     assert report.is_defined
     _metrics, result = score([10_000.0 + 10.0 * i for i in range(500)], trades, settings)
     assert not result.rejected
+
+
+# ---------------------------------------------------------------------------
+# 4. selecting the scoring period through the declared warm-up
+# ---------------------------------------------------------------------------
+def a_curve_that_falls_then_rises(n: int = 2000) -> list[float]:
+    """The period-selection target: a bad first half and a good second half."""
+    equity = [10_000.0]
+    for i in range(1, n):
+        equity.append(equity[-1] * (0.9995 if i < n // 2 else 1.0015))
+    return equity
+
+
+def test_declaring_warm_up_still_buys_score_and_that_is_recorded(settings) -> None:
+    """A KNOWN-OPEN hole, pinned so it cannot widen unnoticed (ADR 0007).
+
+    Warm-up bars are excluded from every metric, so declaring more of them
+    deletes the bars a candidate would be judged on. This test asserts the
+    exploit *still works*, because closing it means either regenerating a golden
+    baseline or breaking the compiler's bar-for-bar parity test — a decision for
+    the project owner, recorded in ADR 0007 rather than taken here.
+
+    When that decision is taken, this test must be replaced by its inverse. It
+    exists so the hole is impossible to forget and so its size is measured: if a
+    future change makes warm-up *more* profitable, the recorded numbers move and
+    this fails.
+    """
+    equity = a_curve_that_falls_then_rises()
+    trades = [a_trade(10.0, 0.001, i) for i in range(40)]
+
+    def at(warmup: int):
+        result = a_result(equity, trades).model_copy(update={"warmup_bars": warmup})
+        metrics = compute_metrics(result)
+        return metrics, compute_fitness(metrics, trades, InnerFoldReport(), None, settings.fitness)
+
+    honest_metrics, honest = at(0)
+    trimmed_metrics, trimmed = at(900)
+
+    assert trimmed.fitness > honest.fitness, "ADR 0007 describes this hole; it is still open"
+    assert trimmed_metrics.max_drawdown < honest_metrics.max_drawdown
+    # the measured size of the hole, so a regression that widens it is visible
+    assert honest.fitness == pytest.approx(0.078220, abs=1e-5)
+    assert trimmed.fitness == pytest.approx(0.295525, abs=1e-5)
+
+
+def test_mutation_does_not_ratchet_warm_up_upward() -> None:
+    """The route that made the hole reachable without intent is closed.
+
+    `_compile` used `max(existing, required)`, so a lineage that once held a
+    long-lookback indicator kept the long warm-up after mutating that indicator
+    away — and was scored on a shorter, later window than its competitors ever
+    after. Warm-up now follows the structure that is actually present.
+    """
+    import inspect
+
+    from quantlab.evolution import mutation
+
+    source = inspect.getsource(mutation)
+    assert "max(\n                    self.genome.warmup_bars" not in source
+    assert '"warmup_bars": required_warmup(conditions, self.schema)' in source
+
+
+# ---------------------------------------------------------------------------
+# 5. the invariant checker must survive the corruption it looks for
+# ---------------------------------------------------------------------------
+def test_a_stored_genome_that_will_not_validate_is_a_verdict_not_a_crash() -> None:
+    """INV-10 has to be able to *report* corruption, not die of it.
+
+    `genome_of` let a pydantic ValidationError escape, so a single unparseable
+    stored genome aborted the whole run's audit instead of being recorded as one
+    mismatched candidate — the verifier crashed on exactly what it exists to
+    detect.
+    """
+    from quantlab.core.errors import StrategyError
+    from quantlab.evolution.lineage import genome_of
+
+    class Row:
+        candidate_id = "c1"
+        kind = "genome"
+        genome_json = '{"name": "x", "warmup_bars": -1}'
+
+    with pytest.raises(StrategyError, match="not a valid genome"):
+        genome_of(Row())

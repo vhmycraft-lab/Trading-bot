@@ -447,6 +447,26 @@ class StrategyGenome(BaseModel):
                 )
 
     def _check_warmup(self) -> None:
+        """Warm-up must cover the indicators (spec 9.6 rule 6).
+
+        Rule 6 is a lower bound only, and that is a known, measured weakness
+        rather than a settled design. Warm-up bars are excluded from every
+        metric, so a warm-up *longer* than the structure requires lets a
+        candidate choose which suffix of the evaluation window it is judged on.
+        On a curve that falls for a thousand bars and then rises, declaring 900
+        bars of warm-up instead of 0 moved fitness from 0.078 to 0.296 and max
+        drawdown from 0.39 to 0.05 — identical trades, identical equity.
+
+        Closing it by making the bound exact is a one-line change here, but it
+        forces `strategies/baselines/rsi_reversion.py` (which declares a round
+        60 where its indicators need 51) either to change — regenerating a
+        golden baseline — or to diverge from its compiled genome twin. That is
+        a decision about scoring, not a bug fix, so it is recorded rather than
+        taken unilaterally. See docs/DECISIONS/0007-warmup-is-not-free.md.
+
+        What *is* fixed is the ratchet: mutation no longer carries a warm-up
+        forward once the structure that justified it is gone.
+        """
         needed = self.max_lookback()
         if self.warmup_bars < needed:
             raise ValueError(

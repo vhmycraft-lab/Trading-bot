@@ -332,10 +332,13 @@ def required_warmup(
 ) -> int:
     """The smallest ``warmup_bars`` section 9.6 rule 6 permits for ``conditions``.
 
-    Exposed because mutation needs it too: a structural edit can lengthen the
-    longest lookback, and raising warm-up to match is not "repairing by relaxing a
-    rule" — rule 6 is a lower bound, and a longer warm-up is strictly more
-    conservative.
+    Exposed because mutation needs it too: a structural edit can lengthen *or
+    shorten* the longest lookback, and warm-up follows it in both directions.
+
+    An earlier version of this docstring called a longer warm-up "strictly more
+    conservative". It is not: warm-up bars are excluded from every metric, so a
+    warm-up longer than the structure requires is a candidate declining to be
+    measured on bars where its indicators were perfectly well defined.
     """
     schema = dict(params or {})
     return max(

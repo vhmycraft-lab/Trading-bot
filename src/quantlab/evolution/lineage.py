@@ -22,6 +22,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
+
 from quantlab.core.errors import StoreError, StrategyError
 from quantlab.core.genome import StrategyGenome, genome_id
 from quantlab.evolution.mutation import AppliedMutation, Phenotype
@@ -81,10 +83,18 @@ def mutations_of(store: ExperimentStore, candidate_id: str) -> list[AppliedMutat
 def genome_of(candidate: Any) -> StrategyGenome:
     """The genome a candidate row carries.
 
+    A stored genome that will not parse or will not validate is reported as a
+    :class:`StrategyError`, which :func:`verify_run` records as a mismatch. It
+    used to escape as a pydantic ``ValidationError`` and abort the audit — so
+    INV-10's verifier crashed on exactly the corruption it exists to detect,
+    and one bad row took the whole run's report with it. Corrupt is a verdict
+    this function is allowed to reach, not an error it should die of.
+
     Raises:
         StoreError: the candidate is ``opaque`` and has none. Section 9.6 gives
             opaque candidates parameter mutation only, so asking one to replay a
             structural edit is a question about the wrong candidate.
+        StrategyError: the stored genome is not a valid genome.
     """
     document = getattr(candidate, "genome_json", None)
     if not document:
@@ -93,7 +103,13 @@ def genome_of(candidate: Any) -> StrategyGenome:
             candidate_id=getattr(candidate, "candidate_id", "?"),
             kind=getattr(candidate, "kind", "?"),
         )
-    return StrategyGenome.model_validate(json.loads(document))
+    try:
+        return StrategyGenome.model_validate(json.loads(document))
+    except (ValidationError, ValueError) as exc:
+        raise StrategyError(
+            "the stored genome is not a valid genome",
+            candidate_id=getattr(candidate, "candidate_id", "?"),
+        ) from exc
 
 
 def _params_of(candidate: Any) -> Mapping[str, Any]:
@@ -160,7 +176,14 @@ def verify_candidate(store: ExperimentStore, candidate_id: str) -> bool:
     chain = ancestry(store, candidate_id)
     if not chain:
         raise StoreError("no such candidate", candidate_id=candidate_id)
-    return genome_id(replay(store, candidate_id)) == genome_id(genome_of(chain[-1]))
+    try:
+        stored = genome_of(chain[-1])
+    except StrategyError:
+        # A stored genome that will not validate cannot equal a replayed one.
+        # Returning False is the answer to the question asked; raising here made
+        # INV-10's verifier die on exactly the corruption it exists to detect.
+        return False
+    return genome_id(replay(store, candidate_id)) == genome_id(stored)
 
 
 def verify_run(store: ExperimentStore, evolution_id: str) -> ReplayReport:
