@@ -71,7 +71,11 @@ from quantlab.core.types import (
 __all__ = ["ENGINE_VERSION", "SimpleBarEngine"]
 
 #: Bumped whenever any fill or accounting rule changes (spec section 8.4).
-ENGINE_VERSION: Final[str] = "1"
+#: Bumped to "2": the end-of-data close now lands on the last bar at which
+#: trading was possible, rather than on a gap-filled one (ADR 0009). No golden
+#: baseline moved — none of them ends on a synthetic bar — but the fill rule
+#: changed, and spec 0.3 versions the execution model rather than sampling it.
+ENGINE_VERSION: Final[str] = "2"
 
 #: Tolerance of the independent equity reconstruction, relative to equity.
 _ACCOUNTING_TOL: Final[float] = 1e-6
@@ -790,9 +794,24 @@ class SimpleBarEngine:
         equity: np.ndarray,
         position_frac: np.ndarray,
     ) -> None:
-        last = bars.n_bars - 1
         if abs(state.position_qty) <= _EPS or state.ruined:
             return
+
+        # Close on the last bar at which trading was actually possible. The
+        # engine defers orders and suppresses risk exits on gap-filled bars
+        # because no trade could occur at a carried-forward price; the forced
+        # close used to ignore that rule, so a dataset ending on a synthetic bar
+        # liquidated every open position at a price that never traded.
+        gap_filled = bars.is_gap_filled
+        last = bars.n_bars - 1
+        while last >= 0 and bool(gap_filled[last]):
+            last -= 1
+        if last < 0:
+            # Every bar is synthetic: there is no real price to close at, so the
+            # position stays open and says so, rather than being closed at fiction.
+            self._log(log, "end_of_data_close skipped reason=no_real_bar")
+            return
+
         reference = float(bars.close[last])
         price = self._slipped_price(
             bars,
@@ -806,9 +825,13 @@ class SimpleBarEngine:
         self._fill(
             state, bars, last, -state.position_qty, price, reference, config, log, "end_of_data"
         )
-        equity[last] = state.cash + state.position_qty * float(bars.close[last])
-        position_frac[last] = 0.0
-        self._log(log, f"bar={last} end_of_data_close equity={equity[last]:.8f}")
+        # The position is flat from the closing bar onwards, so every remaining
+        # bar marks to cash. Without this the synthetic tail would still carry
+        # the pre-close equity.
+        closed_equity = state.cash + state.position_qty * float(bars.close[last])
+        equity[last:] = closed_equity
+        position_frac[last:] = 0.0
+        self._log(log, f"bar={last} end_of_data_close equity={closed_equity:.8f}")
 
     # -- accounting --------------------------------------------------------
     def _check_accounting(self, state: _State, marked: float, i: int, closes: np.ndarray) -> None:
