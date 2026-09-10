@@ -299,8 +299,22 @@ def agreement(left: Sequence[float] | np.ndarray, right: Sequence[float] | np.nd
     scores two unrelated strategies at 0.66, which is nearer their score against
     themselves (1.0) than against a strategy they share nothing with.
 
-    Two candidates that are never both in the market score 0.0; two that are
-    never in it at all score 1.0, having done exactly the same nothing.
+    A candidate that is **never in the market at all** has not demonstrated a
+    different behaviour; it has demonstrated no behaviour. Its agreement with
+    anything is therefore *unmeasurable*, and unmeasurable is scored 1.0 —
+    identical — for exactly the reason :func:`similarity` gives when neither
+    candidate has been evaluated: assuming they differ would be an unearned claim
+    to diversity.
+
+    Scoring it 0.0 instead — as "maximally different" — let dead candidates prop
+    up the population diversity measure. Eight behavioural clones score 0.0000,
+    a total collapse; adding two structurally distinct do-nothing candidates
+    lifted that to 0.3644, above the 0.35 floor, so the immigrant boost stopped
+    firing on precisely the population it exists to rescue. The inactive
+    candidates also survived niching, because nothing was similar to them.
+
+    Two *active* candidates that are never both in the market still score 0.0:
+    they genuinely traded differently, which is the case this measure is for.
 
     Raises:
         StrategyError: the two series have different lengths. Comparing a prefix
@@ -314,9 +328,13 @@ def agreement(left: Sequence[float] | np.ndarray, right: Sequence[float] | np.nd
         )
     if a.size == 0:
         return 1.0
+    # An entirely flat series carries no behaviour to compare. This covers the
+    # both-flat case too, which is why it is tested before `live`.
+    if not np.any(a) or not np.any(b):
+        return 1.0
     live = (a != 0) | (b != 0)
     n_live = int(np.count_nonzero(live))
-    if n_live == 0:
+    if n_live == 0:  # pragma: no cover - implied by the emptiness test above
         return 1.0
     return float(np.count_nonzero((a == b) & live) / n_live)
 

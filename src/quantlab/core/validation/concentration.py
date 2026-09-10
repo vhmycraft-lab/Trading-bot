@@ -59,9 +59,20 @@ class TradeRemovalReport:
     def is_defined(self) -> bool:
         """True when retention could be computed at all.
 
-        False means total pnl was not positive, which cannot happen for a
-        candidate that passed the ``F_EXPECTANCY`` gate — so a caller seeing this
-        is looking at a losing strategy, not at a missing computation.
+        False means total pnl was not positive. This **can** happen to a
+        candidate that passed ``F_EXPECTANCY``, and an earlier version of this
+        docstring claimed it could not. The two quantities are measured in
+        different units: expectancy is the mean of ``pnl_pct`` while retention
+        is a ratio of absolute ``pnl``, so a ledger of small-notional winners and
+        large-notional losers has a positive percentage expectancy and a negative
+        total. Twenty trades of +5 % on 1 unit and ten of -1 % on 4 units give an
+        expectancy of +0.03 and a total of -20.
+
+        That mattered, because both ``F_CONCENTRATION`` and ``p_removal`` used to
+        *skip* an undefined retention — so the shape that defeats the invariant
+        also disabled the two defences built on it. Callers must treat this as a
+        rejection, not as a missing measurement: a strategy that lost money has
+        the strongest possible concentration problem, not an unmeasured one.
         """
         return any(value is not None for value in self.retention.values())
 

@@ -46,6 +46,21 @@ DEFAULT_CONSISTENCY_BARS: Final[int] = 720
 _EPS: Final[float] = 1e-12
 _Z95: Final[float] = 1.959963984540054
 
+#: Downside deviation below this fraction of the return RMS is float noise, not
+#: risk.
+#:
+#: The guard it replaces was an absolute ``1e-12`` applied to a scale-dependent
+#: quantity: per-bar returns are of order 1e-3, so almost any downside at all
+#: cleared it. A single bar dipping by 1e-6 in an otherwise rising curve produced
+#: a Sortino of 2.1e10 — which then clipped to a *perfect* risk-adjusted score,
+#: while the same curve with no dip at all scored zero. Adding an economically
+#: meaningless loss raised fitness by 31 %, so the search was paid to inject one.
+#:
+#: Comparing against the RMS of the same series makes the test scale-invariant:
+#: it asks whether the downside is measurable *at the scale of the returns*,
+#: which is the question, rather than whether it exceeds a fixed constant.
+_MIN_DOWNSIDE_FRACTION: Final[float] = 1e-3
+
 
 class MetricSet(BaseModel):
     """The metric vector for one run.  Every field is ``float | None``."""
@@ -302,7 +317,12 @@ def compute_metrics(
     if excess.size >= 1:
         downside = np.minimum(excess, 0.0)
         downside_deviation = float(math.sqrt(float(np.mean(downside**2))))
-        if downside_deviation > _EPS:
+        # Relative, not absolute: see _MIN_DOWNSIDE_FRACTION. A downside that is
+        # negligible against the returns' own scale is not a small risk, it is an
+        # unmeasured one, and it is reported as undefined rather than as a ratio
+        # whose size is an artefact of the one bar in the denominator.
+        scale = float(math.sqrt(float(np.mean(excess**2))))
+        if downside_deviation > max(_EPS, _MIN_DOWNSIDE_FRACTION * scale):
             sortino = float(np.mean(excess)) / downside_deviation * math.sqrt(result.bars_per_year)
 
     sharpe_low, sharpe_high = _sharpe_ci(sharpe, int(excess.size))

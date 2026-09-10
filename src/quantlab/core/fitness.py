@@ -192,6 +192,13 @@ def _failed_gate(
     drawdown = metrics.max_drawdown
     if drawdown is not None and drawdown > gates.max_drawdown:
         return "F_DRAWDOWN"
+    # An undefined retention means total pnl was not positive (see
+    # TradeRemovalReport.is_defined). Skipping it here let a ledger with a
+    # positive percentage expectancy and a negative total pass every gate with
+    # p_removal left at 1.0. "Lost money overall" is a concentration failure of
+    # the most complete kind, so it is a rejection rather than a missing input.
+    if removal.n_trades and not removal.is_defined:
+        return "F_CONCENTRATION"
     retention_1 = removal.retention_at(1)
     if retention_1 is not None and retention_1 <= gates.min_retention_top1:
         return "F_CONCENTRATION"
@@ -341,6 +348,11 @@ def _removal_penalty(removal: TradeRemovalReport, settings: FitnessSettings) -> 
     averaging that away is exactly the mistake this test exists to prevent.
     """
     penalties = settings.penalties
+    # Defence in depth: the gate above already rejects this, but a penalty that
+    # returns 1.0 for a strategy whose retention could not be computed would be
+    # the wrong answer if the gate were ever reordered.
+    if removal.n_trades and not removal.is_defined:
+        return 0.0
     worst = 1.0
     for k, floor, target in zip(
         penalties.removal_k, penalties.removal_floor, penalties.removal_target, strict=True
