@@ -1161,6 +1161,24 @@ class SqliteExperimentStore:
                 row.stopped_at = int(stopped_at)
             return row
 
+    def paper_sessions(self, *, status: str | None = None) -> list[PaperSession]:
+        """Every paper session, newest first, optionally filtered by status.
+
+        Ordered by ``started_at`` descending because the question a person asks
+        this is almost always "what is running now?", and a list that put the
+        oldest session first would answer it last.
+        """
+        with session_scope(self.factory) as session:
+            stmt = select(PaperSession)
+            if status is not None:
+                stmt = stmt.where(PaperSession.status == status)
+            rows = list(session.scalars(stmt).all())
+        return sorted(rows, key=lambda r: (-int(r.started_at), r.session_id))
+
+    def find_paper_session(self, session_id: str) -> PaperSession | None:
+        with session_scope(self.factory) as session:
+            return session.get(PaperSession, session_id)
+
     # -- evolution (spec section 13) ---------------------------------------
     def create_evolution_run(
         self,

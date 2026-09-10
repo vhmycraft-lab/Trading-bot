@@ -326,6 +326,14 @@ class ExperimentStore(Protocol):
         """Record that a model was asked something, and what it cost."""
         ...
 
+    def paper_sessions(self, *, status: str | None = ...) -> Sequence[Any]:
+        """Every paper session, newest first (spec section 16.3)."""
+        ...
+
+    def find_paper_session(self, session_id: str) -> Any:
+        """One paper session by id, or ``None``."""
+        ...
+
     # -- evolution (spec section 13) ---------------------------------------
     # Spelled out rather than declared as ``**fields``: a protocol that accepts
     # anything checks nothing, and these are the calls that write the lineage

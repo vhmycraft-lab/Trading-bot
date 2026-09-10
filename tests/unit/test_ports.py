@@ -155,6 +155,12 @@ class StubExperimentStore:
     def search_trials_for_family(self, family_id: str) -> Mapping[str, int]:
         return {}
 
+    def paper_sessions(self, *, status: str | None = None) -> list[Any]:
+        return []
+
+    def find_paper_session(self, session_id: str) -> Any:
+        return None
+
     def increment_validation_touches(self, family_id: str) -> int:
         return 0
 

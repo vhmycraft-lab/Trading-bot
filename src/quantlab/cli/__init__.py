@@ -32,6 +32,7 @@ from quantlab.cli import data as data_module
 from quantlab.cli import doctor as doctor_module
 from quantlab.cli import evolve as evolve_module
 from quantlab.cli import optimize as optimize_module
+from quantlab.cli import paper as paper_module
 from quantlab.cli import report as report_module
 from quantlab.cli import validate as validate_module
 from quantlab.cli._exit import QuantLabGroup
@@ -100,6 +101,7 @@ app.add_typer(report_module.app, name="report")
 app.add_typer(optimize_module.app, name="optimize")
 app.add_typer(evolve_module.app, name="evolve")
 app.add_typer(validate_module.app, name="validate")
+app.add_typer(paper_module.app, name="paper")
 
 
 def _version_callback(value: bool) -> None:
