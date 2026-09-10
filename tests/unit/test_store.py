@@ -1882,6 +1882,41 @@ def test_candidates_are_returned_in_a_deterministic_order(
     assert store.candidates_for("nope") == []
 
 
+def test_the_candidate_order_does_not_move_with_the_clock(db_engine: Engine) -> None:
+    """The order must be a property of the search, not of how fast the machine ran.
+
+    The fixture above stamps every row with one frozen timestamp, so a
+    ``created_at`` term in the sort key would tie there and the assertion would
+    hold whether or not the clock was consulted. It is only visible with a clock
+    that actually moves — and a real one does: a generation's rows are written in
+    a few hundred microseconds, tie inside one millisecond most of the time, and
+    separate whenever a millisecond boundary happens to land between two writes.
+    Ordering that flips with the weather made INV-7's resumed-run comparison
+    (``tests/integration/test_evolution_resume.py``) pass or fail by luck.
+
+    This clock runs *backwards* relative to insertion, so any weight given to
+    ``created_at`` reverses the result rather than merely perturbing it.
+    """
+    countdown = [10**12]
+
+    def backwards() -> int:
+        countdown[0] -= 1
+        return countdown[0]
+
+    store = SqliteExperimentStore(make_session_factory(db_engine), now_ms=backwards)
+    _evolution(store)
+    for index in range(4):
+        _candidate(store, f"c{index}", gen_index=0)
+
+    rows = store.candidates_for("ev0")
+    assert [c.candidate_id for c in rows] == ["c0", "c1", "c2", "c3"]
+    # The rows really did get decreasing timestamps: the guarantee is not an
+    # accident of every row sharing one.
+    assert [c.created_at for c in rows] == sorted((c.created_at for c in rows), reverse=True), (
+        "the adversarial clock did not reach the rows, so this test proves nothing"
+    )
+
+
 def test_generations_are_returned_in_index_order(store: SqliteExperimentStore) -> None:
     _evolution(store)
     for index in (3, 1, 2):

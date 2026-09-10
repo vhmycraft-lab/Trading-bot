@@ -1480,13 +1480,31 @@ class SqliteExperimentStore:
         return sorted(rows, key=lambda r: (r.created_at, r.promotion_id))
 
     def candidates_for(self, evolution_id: str, gen_index: int | None = None) -> list[Candidate]:
-        """A run's candidates, oldest generation first, deterministically ordered."""
+        """A run's candidates, oldest generation first, deterministically ordered.
+
+        The order is ``(gen_index, candidate_id)`` and deliberately does **not**
+        consult ``created_at``. The wall clock is not a sound ordering key here: a
+        generation's rows are written within a few hundred microseconds, so they
+        usually share one millisecond and tie — but when a millisecond boundary
+        happens to fall mid-generation the timestamps separate and the order
+        changes. That made this method's own contract weather-dependent, and with
+        it every comparison of one run against another: INV-7's "a resumed run is
+        candidate-for-candidate identical to an uninterrupted one" passed or failed
+        according to how the writes lined up against the clock.
+
+        ``candidate_id`` is a total key — it is the primary key, and a
+        deterministic function of ``(evolution_id, gen_index, slot, phenotype)`` —
+        so the same search yields the same order on any machine at any speed. Slot
+        order within a generation is not recoverable from it and is recorded
+        nowhere else, but it never was: ``created_at`` preserved it only when the
+        clock happened to tick between the right two rows.
+        """
         statement = select(Candidate).where(Candidate.evolution_id == evolution_id)
         if gen_index is not None:
             statement = statement.where(Candidate.gen_index == int(gen_index))
         with session_scope(self.factory) as session:
             rows = session.execute(statement).scalars().all()
-        return sorted(rows, key=lambda r: (r.gen_index, r.created_at, r.candidate_id))
+        return sorted(rows, key=lambda r: (r.gen_index, r.candidate_id))
 
     def generations_for(self, evolution_id: str) -> list[Generation]:
         with session_scope(self.factory) as session:
