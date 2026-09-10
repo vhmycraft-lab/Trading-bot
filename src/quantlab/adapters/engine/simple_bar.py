@@ -37,6 +37,13 @@ import pandas as pd
 
 from quantlab.core.costs import SlippageModel, build_slippage_model
 from quantlab.core.errors import EngineError, StrategyRuntimeError
+from quantlab.core.execution import (
+    fee_of,
+    needs_order,
+    round_to_lot,
+    size_from_notional,
+    slipped_price,
+)
 from quantlab.core.strategy import Context, IndicatorCache, Strategy, resolve_params
 from quantlab.core.types import (
     MAX_ENGINE_LOG_LINES,
@@ -57,9 +64,6 @@ __all__ = ["ENGINE_VERSION", "SimpleBarEngine"]
 
 #: Bumped whenever any fill or accounting rule changes (spec section 8.4).
 ENGINE_VERSION: Final[str] = "1"
-
-#: Exposure changes smaller than this do not justify a round trip of costs.
-_REBALANCE_EPS: Final[float] = 0.01
 
 #: Tolerance of the independent equity reconstruction, relative to equity.
 _ACCOUNTING_TOL: Final[float] = 1e-6
@@ -407,9 +411,9 @@ class SimpleBarEngine:
             if abs(equity_now) > _EPS
             else 0.0
         )
-        crosses_zero = (desired > 0 > current) or (desired < 0 < current)
-        closes_out = abs(desired) <= _EPS and abs(current) > _EPS
-        if not (crosses_zero or closes_out or abs(desired - current) > _REBALANCE_EPS):
+        # The deadband lives in `core/execution.py` so the paper runtime opens
+        # and closes on the same bars this does (section 16.2).
+        if not needs_order(desired, current):
             return
         state.pending = _PendingOrder(
             created_bar=i,
@@ -431,9 +435,18 @@ class SimpleBarEngine:
         slippage: SlippageModel,
         reference: float,
     ) -> float:
-        """Apply slippage to ``reference``, always against the trader."""
-        slip = max(0.0, slippage.bps(bars, i, abs(notional))) * config.cost_multiplier / 1e4
-        return reference * (1.0 + slip) if buying else reference * (1.0 - slip)
+        """Apply slippage to ``reference``, always against the trader.
+
+        The arithmetic is :func:`quantlab.core.execution.slipped_price`, which
+        the paper broker also calls — section 16.2 requires a paper fill to
+        price identically to a backtest one, and the only way to hold that is
+        for there to be one implementation."""
+        return slipped_price(
+            reference,
+            slippage.bps(bars, i, abs(notional)),
+            buying=buying,
+            cost_multiplier=config.cost_multiplier,
+        )
 
     def _execute_pending(
         self,
@@ -479,7 +492,6 @@ class SimpleBarEngine:
         # 100 % of equity: without it the fee is financed, cash goes negative and
         # position_frac exceeds max_position_fraction (spec section 14.3's
         # G_SANITY gate would then fail on a correctly-behaved strategy).
-        fee_rate = config.fee_bps * config.cost_multiplier / 1e4
         provisional = self._slipped_price(
             bars,
             i,
@@ -492,7 +504,7 @@ class SimpleBarEngine:
         if provisional <= _EPS:
             self._log(log, f"bar={i} order_dropped reason=non_positive_price")
             return
-        target_qty = target_notional / (provisional * (1.0 + fee_rate))
+        target_qty = size_from_notional(target_notional, provisional, config)
 
         delta = self._round_to_lot(target_qty - current_qty, config.lot_step)
         if abs(delta) <= _EPS:
@@ -546,7 +558,7 @@ class SimpleBarEngine:
             )
             return
 
-        fee = qty * price * config.fee_bps * config.cost_multiplier / 1e4
+        fee = fee_of(qty, price, config)
         slippage_cost = abs(price - reference) * qty
 
         previous_qty = state.position_qty
@@ -822,10 +834,7 @@ class SimpleBarEngine:
     # -- result ------------------------------------------------------------
     @staticmethod
     def _round_to_lot(qty: float, lot_step: float) -> float:
-        if lot_step <= _EPS:
-            return float(qty)
-        steps = math.floor(abs(qty) / lot_step + 1e-9)
-        return math.copysign(steps * lot_step, qty)
+        return round_to_lot(qty, lot_step)
 
     @staticmethod
     def _log(log: list[str], message: str) -> None:
