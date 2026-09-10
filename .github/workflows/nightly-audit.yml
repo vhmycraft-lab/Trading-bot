@@ -1,0 +1,77 @@
+# Nightly audit (master spec T44).
+#
+# Separate from the commit gate on purpose. `make check` answers "is this change
+# sound?"; this answers "is what we already believe still true?" — and those
+# decay for different reasons. A dependency picks up a CVE without anyone
+# touching the repository, and a Parquet file can change on disk while every
+# test still passes, because nothing re-reads it.
+#
+# It runs on a schedule and on demand. It does not run per-push: reproducing
+# stored runs is slow, and a check that made every commit slower would be the
+# first thing dropped.
+
+name: nightly-audit
+
+on:
+  schedule:
+    # 03:17 UTC. Not on the hour — every scheduled job in the world runs at
+    # :00, and GitHub delays the queue accordingly.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed for run selection (omit for a fresh one)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync the environment
+        run: make sync
+
+      - name: Migrate the database
+        run: make db-upgrade
+
+      # The coverage check needs a report from *this* run, not one from the
+      # repository. Running the suite first is what makes the freshness gate in
+      # `scripts/check_coverage.py` mean anything here.
+      - name: Run the test suite
+        run: make test
+
+      - name: Nightly audit
+        run: |
+          if [ -n "${{ inputs.seed }}" ]; then
+            uv run python scripts/nightly_audit.py --seed "${{ inputs.seed }}"
+          else
+            uv run python scripts/nightly_audit.py
+          fi
+
+      # Uploaded even when the audit fails — especially then. The seed that
+      # selected the failing runs is in the log, and it is what makes the
+      # failure repeatable.
+      - name: Upload the audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-audit-${{ github.run_number }}
+          path: |
+            coverage.json
+          if-no-files-found: ignore
+          retention-days: 30

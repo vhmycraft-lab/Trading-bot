@@ -28,6 +28,7 @@ from quantlab.adapters.store.sqlite import (
     upgrade_to_head,
 )
 from quantlab.cli import backtest as backtest_module
+from quantlab.cli import backup as backup_module
 from quantlab.cli import data as data_module
 from quantlab.cli import doctor as doctor_module
 from quantlab.cli import evolve as evolve_module
@@ -102,6 +103,7 @@ app.add_typer(optimize_module.app, name="optimize")
 app.add_typer(evolve_module.app, name="evolve")
 app.add_typer(validate_module.app, name="validate")
 app.add_typer(paper_module.app, name="paper")
+app.add_typer(backup_module.app, name="backup")
 
 
 def _version_callback(value: bool) -> None:

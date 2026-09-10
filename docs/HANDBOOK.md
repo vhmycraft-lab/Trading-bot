@@ -326,6 +326,59 @@ the backtest engine are kept honest about agreeing with each other.
 
 ---
 
+## Backing up, and checking nothing has rotted
+
+```bash
+uv run quantlab backup create ../quantlab-backup.tar.gz
+```
+
+Backs up the database, the datasets *and their manifests*, the artifacts and
+the configuration — everything needed to reproduce a number, which is more than
+the database. It deliberately does **not** back up `.env`. An archive travels,
+and a credential inside one is a credential in every place the archive has ever
+been; secrets live in the Keychain and are re-entered on the new machine. The
+manifest records that the exclusion happened, so a restore that finds no `.env`
+knows it was by design rather than by loss.
+
+```bash
+uv run quantlab backup verify ../quantlab-backup.tar.gz
+```
+
+Reads the archive's manifest without unpacking it.
+
+```bash
+uv run quantlab backup restore ../quantlab-backup.tar.gz --into ../fresh
+```
+
+Unpacks, then re-hashes every file against the manifest. It refuses to
+overwrite unless you pass `--force`, because a backup is usually reached for at
+exactly the moment the live tree is confusing, and silently replacing
+`quantlab.db` would destroy the evidence you were reading.
+
+```bash
+make nightly
+```
+
+The audit: reproduce three randomly chosen stored runs, re-hash every dataset
+manifest, `pip-audit`, and the coverage-freshness check. It also runs on a
+schedule in CI.
+
+The runs are chosen at random rather than "the three most recent", and the seed
+is printed. Recent runs are the ones you have just been looking at and would
+have noticed breaking; the risk is an old run going quietly unreproducible
+while nobody watches. The seed is what lets you repeat a failure exactly:
+
+```bash
+uv run python scripts/nightly_audit.py --seed 20260910
+```
+
+An altered byte in any Parquet file fails the manifest check. That is the point
+of it — nothing else in the platform re-reads those files, so a dataset that
+changed after ingestion would invalidate every run citing it and no test would
+notice.
+
+---
+
 ## Things that are true and worth remembering
 
 - Nothing in here can place an order, and no configuration changes that.

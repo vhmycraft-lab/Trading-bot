@@ -68,6 +68,17 @@ def test_every_documented_command_is_one_the_platform_offers(command: str) -> No
     if parts[:2] == ["uv", "run"]:
         parts = parts[2:]
 
+    if parts[0] == "python" and parts[1:2] == ["scripts/nightly_audit.py"]:
+        # A script, not a CLI command. Checked for existence and for the flags
+        # the handbook claims it accepts, rather than executed: a real run
+        # reproduces stored runs and shells out to pip-audit.
+        script = HANDBOOK.parents[1] / parts[1]
+        assert script.is_file(), f"no such script: {parts[1]}"
+        source = script.read_text(encoding="utf-8")
+        for flag in (p for p in parts[2:] if p.startswith("--")):
+            assert flag in source, f"{parts[1]} does not accept {flag}"
+        return
+
     if parts[0] == "pre-commit":
         # A dev-extra tool. Checked as a declared dependency rather than run:
         # `pre-commit install` writes into `.git/hooks`, which a test must not.

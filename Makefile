@@ -38,6 +38,9 @@ check: fmt-check lint type test  ## Full gate: format + lint + types + tests
 audit:  ## Audit dependencies for known vulnerabilities
 	$(RUN) pip-audit
 
+nightly:  ## Full nightly audit: reproduce runs, re-hash manifests, pip-audit, coverage freshness
+	$(RUN) python scripts/nightly_audit.py
+
 db-upgrade:  ## Apply all database migrations
 	$(RUN) alembic upgrade head
 
