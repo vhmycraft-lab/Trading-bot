@@ -38,6 +38,10 @@ from typing import Any, Final, Literal
 
 from quantlab.core.config import LockboxSettings, ValidationSettings
 from quantlab.core.errors import LockboxViolation
+from quantlab.core.validation.deflated_sharpe import (
+    M_FORMULA_VERSION,
+    SUPERSEDED_M_FORMULA,
+)
 from quantlab.core.validation.gates import GateInputs, GateReport, evaluate_gates
 
 __all__ = [
@@ -98,6 +102,22 @@ def require_candidate(verdicts: Sequence[Any]) -> Any:
             "authorisation, or re-validating until one came out favourably would be",
             verdict=str(latest.verdict),
             required=REQUIRED_VERDICT,
+        )
+    # A verdict authorises nothing unless the arithmetic behind it still stands.
+    # ``M`` was once computed as ``n_bars // 100`` (migration 0004), which deflated
+    # a whole evolutionary campaign as gently as a single backtest, so every verdict
+    # reached under it is overstated — and nothing about the stored numbers tells it
+    # apart from a sound one. What it would authorise is irreversible: one look per
+    # family ever, and a FAIL closes the family for good. Refuse, and say what to do.
+    formula = str(getattr(latest, "m_formula_version", SUPERSEDED_M_FORMULA))
+    if formula != M_FORMULA_VERSION:
+        raise LockboxViolation(
+            "this verdict was computed under a superseded multiple-testing formula "
+            "and is overstated; re-run `quantlab validate` and open the lockbox on "
+            "the recomputed verdict",
+            verdict_id=str(getattr(latest, "verdict_id", "")),
+            m_formula_version=formula,
+            required_formula=M_FORMULA_VERSION,
         )
     return latest
 

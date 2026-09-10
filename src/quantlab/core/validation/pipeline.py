@@ -34,6 +34,7 @@ from quantlab.core.logging import get_logger
 from quantlab.core.metrics import MetricSet
 from quantlab.core.types import Trade
 from quantlab.core.validation.concentration import TradeRemovalReport, trade_removal_report
+from quantlab.core.validation.deflated_sharpe import M_FORMULA_VERSION
 from quantlab.core.validation.gates import GateInputs, GateReport, evaluate_gates
 from quantlab.core.validation.score import ScoreInputs, ScoreReport, score_strategy
 from quantlab.core.validation.sensitivity import SensitivityReport
@@ -255,6 +256,10 @@ def validate(
         soft_checks_json=_canonical(report.soft_checks_json()),
         thresholds_json=_canonical(dict(report.thresholds)),
         n_trials_accounted=evidence.n_trials_accounted,
+        # Stamped by the code that produced the verdict, so a stored verdict says
+        # which formula measured it rather than being read under whichever one
+        # happens to be current when someone looks. See migration 0004.
+        m_formula_version=M_FORMULA_VERSION,
     )
     log.info(
         "validation_finished",

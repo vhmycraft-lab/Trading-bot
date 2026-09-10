@@ -234,3 +234,80 @@ def test_moments_ignore_undefined_returns() -> None:
 def test_moments_of_too_short_a_series_are_refused() -> None:
     with pytest.raises(ConfigError, match="at least two returns"):
         moments([0.01])
+
+
+# ---------------------------------------------------------------------------
+# M is the size of the search (section 14.4)
+# ---------------------------------------------------------------------------
+class _Curve:
+    """The two attributes ``_deflated`` reads off a backtest result."""
+
+    def __init__(self, equity: list[float]) -> None:
+        self.equity = equity
+        self.n_bars = len(equity)
+
+
+def _curve(n: int = 600, drift: float = 1.0008) -> _Curve:
+    equity, value = [], 10_000.0
+    for index in range(n):
+        # Deterministic and mildly wobbly: a straight line has zero variance and
+        # makes the Sharpe degenerate.
+        value *= drift + (0.004 if index % 3 == 0 else -0.0035)
+        equity.append(value)
+    return _Curve(equity)
+
+
+def test_a_larger_search_deflates_harder() -> None:
+    """The whole point of the correction, stated as a property.
+
+    ``SR0`` — the Sharpe the best of ``M`` trials reaches by luck alone — grows
+    with ``M``, so the same equity curve must score *lower* the more the search
+    tried. A deflation that did not fall as ``M`` rose would not be correcting for
+    multiple testing at all.
+    """
+    from quantlab.cli.validate import _deflated
+
+    curve = _curve()
+    scores = [_deflated(curve, m) for m in (1, 10, 100, 1_000, 10_000)]
+    assert all(score is not None for score in scores)
+    assert scores == sorted(scores, reverse=True), scores
+    assert scores[0] > scores[-1], "M made no difference at all"
+
+
+def test_the_deflation_is_charged_the_search_and_not_the_bar_count() -> None:
+    """The defect this replaced, nailed shut.
+
+    ``M`` was once ``max(1, n_bars // 100)``: the *validation segment's length*
+    stood in for the size of the search, so a forty-thousand-evaluation campaign
+    was deflated exactly as gently as a single backtest.
+
+    The deflation is still allowed to depend on the segment's length through
+    ``n_periods`` — more data really is more evidence, and the probabilistic
+    Sharpe says so. What it must no longer do is take the *number of trials* from
+    the bar count. Charging a real campaign has to move the verdict away from what
+    the old rule would have produced, or ``M`` is not reaching the arithmetic.
+    """
+    from quantlab.cli.validate import _deflated
+
+    curve = _curve(600)
+    under_old_rule = _deflated(curve, max(1, curve.n_bars // 100))  # M = 6
+    under_real_search = _deflated(curve, 4_000)  # 125 generations x 32
+    assert under_real_search < under_old_rule, (
+        "a real campaign must be deflated harder than the old bar-count stand-in"
+    )
+
+
+def test_m_cannot_be_derived_from_the_result_any_more() -> None:
+    """Structural, not behavioural: ``_deflated`` is handed ``M`` and has nothing
+    else to compute one from.
+
+    The previous version took ``store``, ``strategy_id`` and ``settings`` — every
+    route to the real count — and opened with ``del store, strategy_id, settings``
+    before falling back to the bar count. Keeping the parameter list this narrow is
+    what stops that from quietly happening again.
+    """
+    import inspect as _inspect
+
+    from quantlab.cli.validate import _deflated
+
+    assert list(_inspect.signature(_deflated).parameters) == ["result", "n_trials"]

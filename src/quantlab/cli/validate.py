@@ -181,7 +181,8 @@ def run(
     buyhold = _buy_and_hold(loader, val_bars, _config_at(state, 1.0)) if baselines else None
 
     # -- check 1: the deflated Sharpe ratio ----------------------------------
-    dsr = _deflated(val_result, store, strategy_id, settings)
+    trials = _trials_accounted(store, version.family_id)
+    dsr = _deflated(val_result, trials["total"])
 
     # -- check 3 and G_PERM: market permutations -----------------------------
     permutation_p = None
@@ -225,7 +226,7 @@ def run(
         permutation_p=permutation_p,
         n_free_params=loaded.n_params,
         logic_lines=loaded.logic_lines,
-        n_trials_accounted=_trials_accounted(store, version.family_id),
+        n_trials_accounted=trials["total"],
     )
 
     outcome = run_validation(
@@ -263,25 +264,31 @@ def _buy_and_hold(loader: StrategyLoader, bars: BarFrame, config: BacktestConfig
     return compute_metrics(evaluator.evaluate(bars, {}, config))
 
 
-def _deflated(result: Any, store: Any, strategy_id: str, settings: Any) -> float | None:
+def _deflated(result: Any, n_trials: int) -> float | None:
     """Check 1, from the validation equity curve.
 
-    ``M`` counts every evaluation that led here (section 14.4). The variance of
-    the trial Sharpe ratios is not recoverable from one run, so it is estimated
-    from the per-bar returns themselves — a conservative stand-in that is stated
-    here rather than hidden: with a wider spread the deflation would be harsher,
-    never gentler.
+    ``n_trials`` is section 14.4's ``M`` — every evaluation that led here, from
+    :func:`_trials_accounted`. It is passed in rather than derived here because
+    ``M`` is a property of the *search*, not of the equity curve: an earlier
+    version of this function computed ``max(1, n_bars // 100)``, which made the
+    multiple-testing correction a function of the segment's length and so
+    deflated a forty-thousand-evaluation campaign exactly as gently as a single
+    backtest. See ``docs/DECISIONS`` and the ``m_formula_version`` stamp on every
+    verdict row.
+
+    The variance of the trial Sharpe ratios is not recoverable from one run, so
+    it is estimated from the per-bar returns themselves — a conservative stand-in
+    that is stated here rather than hidden: with a wider spread the deflation
+    would be harsher, never gentler.
     """
-    del store, strategy_id, settings
     equity = np.asarray(result.equity, dtype="float64")
     if equity.size < 3:
         return None
     returns = np.diff(equity) / np.where(equity[:-1] != 0.0, equity[:-1], 1.0)
     sharpe, skew, kurtosis, n_periods = moments(returns)
-    trials = max(1, int(result.n_bars // 100))
     return deflated_sharpe(
         sharpe,
-        n_trials=trials,
+        n_trials=max(1, int(n_trials)),
         var_sr=float(np.var(returns, ddof=1)),
         n_periods=n_periods,
         skew=skew,
@@ -289,16 +296,19 @@ def _deflated(result: Any, store: Any, strategy_id: str, settings: Any) -> float
     )
 
 
-def _trials_accounted(store: Any, family_id: str) -> int:
+def _trials_accounted(store: Any, family_id: str) -> dict[str, int]:
     """``M`` for section 14.4: every evaluation that led here.
 
-    The family's validation touches are always available; evolution and Optuna
-    counts join them when a run cites this family. What cannot be counted is
-    reported as zero rather than guessed at, and the verdict records the number
-    it used.
+    All three of section 14.4's terms — ``evolution_run.n_evaluations``, Optuna
+    trials, and ``family.validation_touches`` — summed over the family, because a
+    family is one idea and every version in it is something the search tried.
+
+    Returned term by term so the verdict can record where its ``M`` came from. A
+    family that has never been evolved or tuned contributes zero from those terms
+    rather than a guess, which is the honest floor: ``M`` is then just the
+    validation touches, and the deflation is as gentle as the evidence allows.
     """
-    family = store.find_family(family_id)
-    return 0 if family is None else int(family.validation_touches)
+    return dict(store.search_trials_for_family(family_id))
 
 
 def _report(outcome: Any, *, shuffle_mdd_p95: float | None) -> None:

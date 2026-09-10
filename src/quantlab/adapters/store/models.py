@@ -271,6 +271,12 @@ class ValidationVerdict(Base):
     soft_checks_json: Mapped[str] = mapped_column(Text, nullable=False)
     thresholds_json: Mapped[str] = mapped_column(Text, nullable=False)
     n_trials_accounted: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Which formula produced ``n_trials_accounted``. Defaulted to the superseded
+    #: one so that every row written before migration ``0004`` is marked as having
+    #: been computed under it, rather than silently inheriting today's meaning.
+    m_formula_version: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="'m1-bar-count'"
+    )
     created_at: Mapped[int] = mapped_column(Integer, nullable=False)
 
 

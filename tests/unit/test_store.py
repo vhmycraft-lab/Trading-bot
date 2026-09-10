@@ -68,6 +68,10 @@ from quantlab.core.errors import ConfigError, ImmutableRowError, RunConflict, St
 from quantlab.core.splits import SplitPolicy, parse_split_policy
 from quantlab.core.types import Side
 from quantlab.core.types import Trade as TradeRecord
+from quantlab.core.validation.deflated_sharpe import (
+    M_FORMULA_VERSION,
+    SUPERSEDED_M_FORMULA,
+)
 from quantlab.ports.store import ArtifactStore, ExperimentStore
 
 HOUR_MS: Final[int] = 3_600_000
@@ -1519,12 +1523,12 @@ def test_migration_0002_adds_the_five_evolution_tables(empty_engine: Engine) -> 
     )
 
 
-def test_migration_0003_is_the_head_and_adds_the_environment_audit_table(
+def test_migration_0003_adds_the_environment_audit_table(
     empty_engine: Engine,
 ) -> None:
     """Project Rome sections 18 and 24: one row per generation recording the
     environment it was run against, keyed so a generation can have only one."""
-    assert upgrade_to_head(empty_engine) == _head_revision() == "0003"
+    assert upgrade_to_head(empty_engine) == _head_revision() == "0004"
     inspector = inspect(empty_engine)
     assert "training_environment" in inspector.get_table_names()
     columns = {column["name"] for column in inspector.get_columns("training_environment")}
@@ -1557,12 +1561,114 @@ def test_the_environment_audit_table_permits_one_row_per_generation(
     assert ("evolution_id", "gen_index") in unique
 
 
+def test_m_counts_the_whole_search_and_not_just_the_validation_touches(
+    store: SqliteExperimentStore,
+) -> None:
+    """Section 14.4's ``M``: evolution evaluations + Optuna trials + touches.
+
+    ``M`` sets ``SR0``, the Sharpe the best of ``M`` trials reaches by luck alone,
+    so it is the bar a result has to clear. Undercounting it lowers that bar in
+    the one direction the correction exists to prevent — the more a search tried,
+    the higher the bar should be, and an ``M`` that ignores the search is not a
+    multiple-testing correction at all.
+
+    Each term is asserted separately: a total alone would still pass if two terms
+    were swapped, or if the evolution term were silently dropped — which is
+    exactly the defect this replaced.
+    """
+    evolution, _ = _evolution(store)
+    family_id = store.get_strategy_version("s0").family_id
+
+    # Nothing has run yet: the honest floor is zero, not a guess.
+    assert store.search_trials_for_family(family_id) == {
+        "evolution_evaluations": 0,
+        "optuna_trials": 0,
+        "validation_touches": 0,
+        "total": 0,
+    }
+
+    store.count_evaluation(evolution.evolution_id, 40)
+    _candidate(store, "c0")  # ties the run to this family, via s0
+    store.record_optuna_study(
+        study_id="st0",
+        experiment_id=evolution.experiment_id,
+        strategy_id="s0",
+        segment="train",
+        sampler="tpe",
+        seed=1,
+        n_trials=75,
+        objective="sortino",
+        best_trial_json="{}",
+        plateau_json="{}",
+        storage_path="optuna.db",
+    )
+    store.increment_validation_touches(family_id)
+    store.increment_validation_touches(family_id)
+
+    assert store.search_trials_for_family(family_id) == {
+        "evolution_evaluations": 40,
+        "optuna_trials": 75,
+        "validation_touches": 2,
+        "total": 117,
+    }
+
+
+def test_migration_0004_marks_every_pre_existing_verdict_as_superseded(
+    empty_engine: Engine,
+) -> None:
+    """A verdict written before the ``M`` correction must not look sound (§14.4).
+
+    ``M`` was once ``max(1, n_bars // 100)`` — the validation segment's length
+    rather than the size of the search — so every verdict reached under it was
+    deflated against too low a bar and is overstated. Nothing in the stored
+    numbers reveals that, which is why the formula is recorded beside them.
+
+    The row here is inserted through the *pre-0004 schema* and then migrated,
+    because that is the only way to prove the marking reaches rows that already
+    existed: inserting after the migration would exercise the column default on a
+    fresh write and say nothing about the ones already on disk. Nothing is
+    rewritten — §6 forbids revising a recorded verdict — the default does the
+    marking.
+    """
+    from alembic import command
+
+    from quantlab.adapters.store.sqlite import _alembic_config
+
+    config = _alembic_config(empty_engine)
+    config.attributes["connection"] = empty_engine
+    command.upgrade(config, "0003")
+
+    # Foreign keys off for this one insert: what is under test is whether the
+    # migration marks a row that already existed, not whether that row's strategy
+    # and split are registered. Building the whole parent chain in raw SQL would be
+    # four tables of setup the assertions never look at.
+    with empty_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        connection.exec_driver_sql(
+            "INSERT INTO validation_verdict (verdict_id, strategy_id, split_id, "
+            "params_json, verdict, overfit_score, hard_gates_json, soft_checks_json, "
+            "thresholds_json, n_trials_accounted, created_at) VALUES "
+            "('v_old', 's0', 'sp0', '{}', 'CANDIDATE', 10.0, '{}', '{}', '{}', 6, 1)"
+        )
+
+    command.upgrade(config, "head")
+
+    with empty_engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT m_formula_version, verdict, n_trials_accounted FROM validation_verdict")
+        ).one()
+    assert row[0] == SUPERSEDED_M_FORMULA
+    assert row[0] != M_FORMULA_VERSION, "a pre-correction verdict must not read as current"
+    # The recorded judgement itself is untouched: marked, not rewritten.
+    assert (row[1], row[2]) == ("CANDIDATE", 6)
+
+
 def test_the_migrations_run_in_order(db_engine: Engine) -> None:
     """Ordering, not just presence: the evolution tables reference `experiment`,
     `dataset`, `split_policy` and `run`, and `training_environment` references
     `evolution_run`, so each migration needs the one before it."""
     assert missing_tables(db_engine) == ()
-    assert current_revision(db_engine) == "0003"
+    assert current_revision(db_engine) == "0004"
 
 
 def test_the_evolution_indexes_from_the_spec_exist(db_engine: Engine) -> None:

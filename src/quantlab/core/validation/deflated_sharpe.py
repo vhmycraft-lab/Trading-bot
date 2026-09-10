@@ -39,6 +39,8 @@ from quantlab.core.errors import ConfigError
 
 __all__ = [
     "EULER_MASCHERONI",
+    "M_FORMULA_VERSION",
+    "SUPERSEDED_M_FORMULA",
     "deannualise",
     "deflated_sharpe",
     "expected_max_sharpe",
@@ -46,6 +48,28 @@ __all__ = [
     "probabilistic_sharpe",
     "sharpe_variance",
 ]
+
+#: Which formula produced a recorded verdict's ``M``. Stamped on every
+#: ``validation_verdict`` row so a stored verdict says how it was computed, rather
+#: than leaving a reader to assume it matches today's code.
+#:
+#: ``M`` is the number of trials the deflation charges against, and understating
+#: it lowers the bar a search-fitted strategy has to clear. A verdict computed
+#: under an older, weaker formula is therefore *overstated*, and nothing about the
+#: number itself distinguishes it from a sound one — which is why the formula is
+#: recorded beside it, and why
+#: :func:`~quantlab.core.validation.lockbox.require_candidate` refuses to open the
+#: lockbox on a verdict not stamped with the current version.
+M_FORMULA_VERSION: Final[str] = "m2-search-size"
+
+#: What every row written before the correction carries (migration ``0004``).
+#: ``m1`` computed ``M`` as ``max(1, n_bars // 100)`` — a function of the
+#: validation segment's length rather than of the search — so it deflated a
+#: forty-thousand-evaluation campaign exactly as gently as a single backtest.
+#: Such rows are not deleted: §6 forbids rewriting a recorded verdict, and what
+#: the platform once believed is itself part of the audit trail. They are marked,
+#: and must be recomputed before they are trusted again.
+SUPERSEDED_M_FORMULA: Final[str] = "m1-bar-count"
 
 #: Euler-Mascheroni constant, from the expected-maximum formula of Bailey and
 #: López de Prado (2014), equation 5.

@@ -198,6 +198,7 @@ class ExperimentStore(Protocol):
         soft_checks_json: str,
         thresholds_json: str,
         n_trials_accounted: int,
+        m_formula_version: str = ...,
     ) -> Any:
         """Record one validation verdict. Append-only (spec section 6)."""
         ...
@@ -465,6 +466,16 @@ class ExperimentStore(Protocol):
 
     def find_evolution_run(self, evolution_id: str) -> Any:
         """The evolution run with this id, or ``None``."""
+        ...
+
+    def search_trials_for_family(self, family_id: str) -> Mapping[str, int]:
+        """Section 14.4's ``M``, term by term, for one family.
+
+        Keys: ``evolution_evaluations``, ``optuna_trials``, ``validation_touches``
+        and their ``total``. Understating this lowers the bar the deflated Sharpe
+        makes a strategy clear, so it is counted from the store rather than
+        approximated.
+        """
         ...
 
     def generations_for(self, evolution_id: str) -> Sequence[Any]:

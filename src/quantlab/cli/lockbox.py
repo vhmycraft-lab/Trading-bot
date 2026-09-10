@@ -49,6 +49,7 @@ from quantlab.core.hashing import short_id
 from quantlab.core.metrics import compute_metrics
 from quantlab.core.splits import SplitPolicy, load_split_policy
 from quantlab.core.types import BacktestConfig, BarFrame, SlippageConfig
+from quantlab.core.validation.deflated_sharpe import M_FORMULA_VERSION
 from quantlab.core.validation.gates import GateInputs, GateReport
 from quantlab.core.validation.lockbox import (
     CLOSED_FAMILY_STATUS,
@@ -298,7 +299,12 @@ def evaluate_lockbox(
         hard_gates_json=json.dumps(_gates_json(decision.gates), sort_keys=True),
         soft_checks_json="{}",
         thresholds_json=json.dumps(config.validation.model_dump(mode="json"), sort_keys=True),
-        n_trials_accounted=int(family.validation_touches),
+        # The same M the validation pipeline charges (section 14.4), assembled from
+        # the store rather than from the family's touches alone: a lockbox verdict
+        # that recorded a smaller M than the validation it followed would understate
+        # the search on the one record nobody can ever redo.
+        n_trials_accounted=int(store.search_trials_for_family(family_id)["total"]),
+        m_formula_version=M_FORMULA_VERSION,
     )
     if decision.family_closed:
         store.set_family_status(family_id, CLOSED_FAMILY_STATUS)

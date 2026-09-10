@@ -28,6 +28,10 @@ from quantlab.container import PROFILES, build_container
 from quantlab.core.config import AppConfig, LockboxSettings, ValidationSettings
 from quantlab.core.errors import LockboxViolation
 from quantlab.core.metrics import MetricSet
+from quantlab.core.validation.deflated_sharpe import (
+    M_FORMULA_VERSION,
+    SUPERSEDED_M_FORMULA,
+)
 from quantlab.core.validation.gates import GATE_IDS
 from quantlab.core.validation.lockbox import (
     CLOSED_FAMILY_STATUS,
@@ -47,6 +51,11 @@ NOW = 1_700_000_000_000
 @dataclass(frozen=True)
 class FakeVerdict:
     verdict: str
+    #: Which formula produced the verdict's ``M``. Defaults to the current one so
+    #: that a test saying "a CANDIDATE verdict" gets a *sound* CANDIDATE verdict;
+    #: the superseded case is asked for explicitly, and tested below.
+    m_formula_version: str = M_FORMULA_VERSION
+    verdict_id: str = "v0"
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,34 @@ class FakeAccess:
 def test_a_candidate_verdict_opens_the_lockbox() -> None:
     latest = FakeVerdict("CANDIDATE")
     assert require_candidate([FakeVerdict("WEAK"), latest]) is latest
+
+
+def test_a_candidate_verdict_computed_under_a_superseded_m_is_refused() -> None:
+    """A CANDIDATE reached under the old ``M`` is not authorisation (§14.4).
+
+    ``M`` was once ``max(1, n_bars // 100)``, so a verdict reached under it was
+    deflated against the *length of the validation segment* rather than the size
+    of the search, and is overstated. It reads as a perfectly ordinary CANDIDATE
+    — which is the danger, because what it would authorise cannot be undone: a
+    family gets one look at the test partition, ever, and a FAIL closes it for
+    good. Spending that on arithmetic already known to be wrong would burn the
+    evidence and the family together.
+    """
+    with pytest.raises(LockboxViolation, match="superseded multiple-testing formula"):
+        require_candidate([FakeVerdict("CANDIDATE", m_formula_version=SUPERSEDED_M_FORMULA)])
+
+
+def test_a_verdict_that_names_no_formula_at_all_is_refused() -> None:
+    """Fail closed. A verdict object too old to carry the field, or a caller that
+    never set it, is of *unknown* provenance rather than current — and unknown
+    provenance is exactly what must not open the lockbox."""
+
+    @dataclass(frozen=True)
+    class Unstamped:
+        verdict: str
+
+    with pytest.raises(LockboxViolation, match="superseded multiple-testing formula"):
+        require_candidate([Unstamped("CANDIDATE")])
 
 
 def test_a_strategy_that_was_never_validated_is_refused() -> None:

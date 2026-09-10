@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal, TypeVar
 
-from sqlalchemy import Engine, create_engine, delete, event, inspect, select, text
+from sqlalchemy import Engine, create_engine, delete, event, func, inspect, select, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.state import InstanceState
 
@@ -56,6 +56,7 @@ from quantlab.core.errors import ConfigError, ImmutableRowError, RunConflict, St
 from quantlab.core.hashing import canonical_json, short_id
 from quantlab.core.splits import SplitPolicy, parse_split_policy
 from quantlab.core.types import Trade as TradeRecord
+from quantlab.core.validation.deflated_sharpe import SUPERSEDED_M_FORMULA
 
 __all__ = [
     "ALEMBIC_VERSION_TABLE",
@@ -587,6 +588,7 @@ class SqliteExperimentStore:
         soft_checks_json: str,
         thresholds_json: str,
         n_trials_accounted: int,
+        m_formula_version: str = SUPERSEDED_M_FORMULA,
     ) -> ValidationVerdict:
         """Record one validation verdict. Append-only (spec section 6).
 
@@ -607,6 +609,7 @@ class SqliteExperimentStore:
                 soft_checks_json=soft_checks_json,
                 thresholds_json=thresholds_json,
                 n_trials_accounted=int(n_trials_accounted),
+                m_formula_version=m_formula_version,
                 created_at=self._now(),
             )
             session.add(row)
@@ -1505,6 +1508,53 @@ class SqliteExperimentStore:
         with session_scope(self.factory) as session:
             rows = session.execute(statement).scalars().all()
         return sorted(rows, key=lambda r: (r.gen_index, r.candidate_id))
+
+    def search_trials_for_family(self, family_id: str) -> dict[str, int]:
+        """``M``'s three terms for section 14.4, counted rather than guessed.
+
+        Section 14.4 defines ``M = evolution_run.n_evaluations + optuna trials +
+        family.validation_touches`` — *every* evaluation that led to the result
+        being judged. The deflated Sharpe's benchmark ``SR0`` is the Sharpe the
+        best of ``M`` trials reaches by luck alone, so understating ``M`` lowers
+        the bar a search-fitted strategy has to clear, which is the one direction
+        the correction must never fail in.
+
+        The family is the unit because a family is one *idea*: every version in it
+        is a variation the search produced, and §14.1 already freezes a family at
+        a fixed number of validation touches for the same reason.
+
+        Returns a mapping with ``evolution_evaluations``, ``optuna_trials``,
+        ``validation_touches`` and their ``total``. Terms are reported separately
+        so a verdict can say where its ``M`` came from instead of presenting one
+        opaque number.
+        """
+        with session_scope(self.factory) as session:
+            versions = select(StrategyVersion.strategy_id).where(
+                StrategyVersion.family_id == family_id
+            )
+            evolution_ids = select(Candidate.evolution_id).where(
+                Candidate.strategy_id.in_(versions)
+            )
+            evaluations = session.execute(
+                select(func.coalesce(func.sum(EvolutionRun.n_evaluations), 0)).where(
+                    EvolutionRun.evolution_id.in_(evolution_ids)
+                )
+            ).scalar_one()
+            trials = session.execute(
+                select(func.coalesce(func.sum(OptunaStudy.n_trials), 0)).where(
+                    OptunaStudy.strategy_id.in_(versions)
+                )
+            ).scalar_one()
+            family = session.get(StrategyFamily, family_id)
+            touches = 0 if family is None else int(family.validation_touches)
+
+        counts = {
+            "evolution_evaluations": int(evaluations),
+            "optuna_trials": int(trials),
+            "validation_touches": touches,
+        }
+        counts["total"] = sum(counts.values())
+        return counts
 
     def generations_for(self, evolution_id: str) -> list[Generation]:
         with session_scope(self.factory) as session:

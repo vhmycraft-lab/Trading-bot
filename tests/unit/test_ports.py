@@ -8,6 +8,7 @@ the swap-an-adapter promise of spec section 2.3 quietly stops being true.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -150,6 +151,9 @@ class StubExperimentStore:
 
     def verdicts_for(self, strategy_id: str) -> list[Any]:
         return []
+
+    def search_trials_for_family(self, family_id: str) -> Mapping[str, int]:
+        return {}
 
     def increment_validation_touches(self, family_id: str) -> int:
         return 0

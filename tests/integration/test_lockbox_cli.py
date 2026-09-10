@@ -37,6 +37,7 @@ from quantlab.cli.lockbox import evaluate_lockbox
 from quantlab.core.config import load_config
 from quantlab.core.errors import ConfigError, LockboxViolation, StoreError
 from quantlab.core.hashing import short_id
+from quantlab.core.validation.deflated_sharpe import M_FORMULA_VERSION
 
 pytestmark = pytest.mark.slow
 
@@ -108,6 +109,10 @@ def _candidate(project: Path, strategy_id: str) -> None:
         soft_checks_json="{}",
         thresholds_json="{}",
         n_trials_accounted=1,
+        # A *sound* CANDIDATE: these tests are about what the lockbox does once a
+        # strategy is admitted, so the verdict admitting it must be one the current
+        # M formula produced. The superseded case is tested in tests/unit/test_lockbox.py.
+        m_formula_version=M_FORMULA_VERSION,
     )
 
 
