@@ -1,0 +1,29 @@
+# LLM prices, in euros per million tokens (master spec section 12.2).
+#
+# A file rather than constants in the adapter: prices change without the code
+# changing, and a cost ledger built from a stale hard-coded number is worse than
+# no ledger at all — it reads as authoritative.
+#
+# A model absent from this file cannot be priced, and the adapter refuses to
+# send to it rather than charging zero. Zero would make `daily_cost_cap_eur`
+# unreachable and the cap silently infinite.
+#
+# Figures below are list prices as published at the time of writing and are the
+# platform's own bookkeeping estimate, not an invoice. Update alongside any
+# change to `llm.model`.
+
+glm-4-plus:
+  input_eur_per_mtok: 6.40
+  output_eur_per_mtok: 6.40
+
+glm-4-air:
+  input_eur_per_mtok: 0.13
+  output_eur_per_mtok: 0.13
+
+glm-4-flash:
+  input_eur_per_mtok: 0.0
+  output_eur_per_mtok: 0.0
+
+# The mock provider never reaches this file — a replayed response cost nothing
+# to obtain, and `MockLLMProvider.cost_eur` returns 0.0 for that reason rather
+# than by looking a price up.

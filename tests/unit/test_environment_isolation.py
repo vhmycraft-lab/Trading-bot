@@ -200,9 +200,22 @@ def test_environment_settings_are_configuration_and_not_a_per_run_request() -> N
 
 def test_no_prompt_or_research_module_can_reach_the_environment() -> None:
     """INV-6 and INV-11 in Rome's terms: nothing that builds an LLM prompt may
-    import the module that holds the seed. Vacuous today — ``research/`` is not
-    built yet — so the guard is written to fail the moment it appears and reaches
-    for this."""
+    import the module that holds the seed.
+
+    This was vacuous until ``research/`` existed, and the note saying so is
+    replaced here by something that cannot go quietly vacuous again: the scan
+    asserts it actually *looked* at both packages first. A guard over an empty
+    set passes for the same reason a guard over a clean one does, and only one
+    of those is evidence.
+    """
+    scanned = [
+        _module_name(path)
+        for path in _python_files()
+        if _module_name(path).startswith(("quantlab.research", "quantlab.reporting"))
+    ]
+    assert any(name.startswith("quantlab.research") for name in scanned), scanned
+    assert any(name.startswith("quantlab.reporting") for name in scanned), scanned
+
     offenders = [
         _module_name(path)
         for path in _python_files()
