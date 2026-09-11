@@ -314,14 +314,16 @@ def test_m_cannot_be_derived_from_the_result_any_more() -> None:
     what stops that from quietly happening again.
 
     ``trial_sharpes`` (ADR 0010) is a bare sequence of floats and so is not such a
-    route: it carries dispersion and nothing that could be counted into ``M``. The
-    forbidden names are asserted separately from the exact list, so adding a fourth
-    parameter one day still has to say out loud that it is not the store.
+    route: it carries dispersion and nothing that could be counted into ``M``.
+    ``dispersion_alpha`` (ADR 0011) is a single configured float — a confidence
+    level, carrying no count and no identity. The forbidden names are asserted
+    separately from the exact list, which is what made this test fire when the
+    fourth parameter arrived instead of silently widening.
     """
     import inspect as _inspect
 
     from quantlab.cli.validate import _deflated
 
     parameters = list(_inspect.signature(_deflated).parameters)
-    assert parameters == ["result", "n_trials", "trial_sharpes"]
+    assert parameters == ["result", "n_trials", "trial_sharpes", "dispersion_alpha"]
     assert not {"store", "strategy_id", "settings", "family_id"} & set(parameters)

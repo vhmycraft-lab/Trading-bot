@@ -161,3 +161,84 @@ def test_trial_sharpes_are_deannualised_before_they_reach_the_variance() -> None
 
 def test_a_nonsense_bar_count_yields_no_trials_rather_than_a_division() -> None:
     assert _trial_sharpes(_FakeStore([2.0, -1.0]), "fam", 0) == []
+
+
+# ---------------------------------------------------------------------------
+# the dispersion is bounded from above, not point-estimated (ADR 0011)
+# ---------------------------------------------------------------------------
+def test_a_small_pool_produces_a_harsher_benchmark_not_an_absent_one() -> None:
+    """The reason this is a bound and not a minimum pool size.
+
+    A hard floor high enough to be comfortable — twenty, thirty — would leave
+    check 1 permanently unmeasured on realistic pools, and "permanently
+    unmeasured" carries exactly as much information as "permanently failing".
+    The bound has no cliff: it errs toward rejecting and relaxes on its own as the
+    pool grows.
+    """
+    from quantlab.core.validation.deflated_sharpe import (
+        sharpe_variance,
+        sharpe_variance_upper_bound,
+    )
+
+    rng = np.random.default_rng(3)
+    sigma = 0.02
+    inflation = []
+    for n in (5, 10, 30, 100, 400):
+        sample = list(rng.normal(0.0, sigma, size=n))
+        point = sharpe_variance(sample)
+        bounded = sharpe_variance_upper_bound(sample)
+        assert bounded > point, "the upper bound must exceed the point estimate"
+        inflation.append(math.sqrt(bounded / point))
+
+    assert inflation == sorted(inflation, reverse=True), (
+        f"the penalty for a small pool must shrink monotonically as it grows: {inflation}"
+    )
+    assert inflation[0] > 2.0, "a five-trial pool should be charged substantially"
+    assert inflation[-1] < 1.10, "a four-hundred-trial pool should be charged almost nothing"
+
+
+def test_the_bound_makes_the_deflation_stricter_never_gentler() -> None:
+    """Direction, asserted rather than argued — the failure mode of ADR 0010."""
+    from quantlab.core.validation.deflated_sharpe import deflated_sharpe as dsr
+    from quantlab.core.validation.deflated_sharpe import (
+        sharpe_variance,
+        sharpe_variance_upper_bound,
+    )
+
+    trials = _trials(spread=0.02, n=8)
+    point = dsr(
+        deannualise(2.0, BARS_PER_YEAR),
+        n_trials=8,
+        var_sr=sharpe_variance(trials),
+        n_periods=15_000,
+    )
+    bounded = dsr(
+        deannualise(2.0, BARS_PER_YEAR),
+        n_trials=8,
+        var_sr=sharpe_variance_upper_bound(trials),
+        n_periods=15_000,
+    )
+    assert bounded < point
+
+
+def test_two_trials_is_the_hard_floor_and_it_is_arithmetic_not_policy() -> None:
+    """Below two there is no variance to bound, so there is nothing to be
+    conservative *with*. One trial reports unmeasured (ADR 0008), never a
+    fabricated dispersion and never a fall back to the unfiltered population."""
+    from quantlab.core.errors import ConfigError
+    from quantlab.core.validation.deflated_sharpe import sharpe_variance_upper_bound
+
+    with pytest.raises(ConfigError):
+        sharpe_variance_upper_bound([0.01])
+    assert _deflated(_run(), 256, [0.01]) is None
+
+
+def test_a_smaller_alpha_is_more_conservative() -> None:
+    """The knob points the way its name says, so a future operator turning it
+    down cannot accidentally loosen the check."""
+    from quantlab.core.validation.deflated_sharpe import sharpe_variance_upper_bound
+
+    trials = _trials(spread=0.02, n=12)
+    assert sharpe_variance_upper_bound(trials, alpha=0.01) > sharpe_variance_upper_bound(
+        trials, alpha=0.10
+    )

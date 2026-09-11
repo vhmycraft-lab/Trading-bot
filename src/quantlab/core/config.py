@@ -250,6 +250,12 @@ class ValidationSettings(_Section):
     permutation: PermutationSettings = PermutationSettings()
     degradation_min_ratio: float = Field(default=0.5, ge=0)
     dsr_threshold: float = Field(default=0.95, gt=0, lt=1)
+    #: Confidence level for the chi-square upper bound on the trial-Sharpe
+    #: dispersion (ADR 0011). ``SR0`` scales with sigma, so bounding sigma from
+    #: above makes a small selection pool produce a *harsher* benchmark rather
+    #: than no benchmark — no cliff, and it tightens on its own as pools grow.
+    #: 0.05 inflates sigma by x1.92 at n=7 and x1.04 at n=1000.
+    dsr_dispersion_alpha: float = Field(default=0.05, gt=0, lt=1)
     pbo: PboSettings = PboSettings()
     sensitivity_max_drop: float = Field(default=0.5, ge=0)
     concentration_top_n: int = Field(default=5, ge=1)

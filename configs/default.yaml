@@ -184,6 +184,10 @@ validation:
     alpha: 0.05
   degradation_min_ratio: 0.5
   dsr_threshold: 0.95
+  # Upper confidence bound on the trial-Sharpe dispersion (ADR 0011). A small
+  # selection pool yields a harsher SR0 rather than no SR0. x1.92 at n=7,
+  # x1.28 at n=30, x1.04 at n=1000.
+  dsr_dispersion_alpha: 0.05
   pbo:
     n_blocks: 16
     max_combinations: 500

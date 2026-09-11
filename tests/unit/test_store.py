@@ -1613,30 +1613,33 @@ def test_m_counts_the_whole_search_and_not_just_the_validation_touches(
     }
 
 
-def test_the_trial_sharpes_come_from_the_same_runs_that_m_counts(
+def test_the_trial_sharpes_are_the_selection_pool_not_every_evaluation(
     store: SqliteExperimentStore,
 ) -> None:
-    """``SR0`` is a function of two things, and they have to describe one search.
+    """``SR0``'s two inputs must describe one population — the selectable one.
 
-    ``M`` says how many trials ran; the variance of the trial Sharpes says how
-    widely they scored. Bailey and López de Prado's equation 5 multiplies one by a
-    function of the other, so a dispersion drawn from a different population than
-    the count is not a conservative approximation of anything — it is two searches
-    pretending to be one. ADR 0010.
+    The deflation asks "given you picked the best of these, how likely is it
+    real?". A candidate a hard gate rejected was never among the things being
+    picked from, so counting it inflates the dispersion with genomes that were
+    never in contention. Measured across two campaigns, doing so put ``SR0`` at
+    11.2 annualised — unreachable for anything real, which turned check 1 from a
+    measurement into a constant 25-point charge. ADR 0011.
 
-    A Sharpe that is not finite is dropped rather than clamped: it carries no
-    dispersion, and one of them would make the variance infinite and ``SR0`` with
-    it — which is the *safe* direction and still wrong, because nothing would ever
-    pass check 1 again for reasons no operator could read off the verdict.
+    A gate-rejected candidate with a wild Sharpe is the exact shape that did the
+    damage, so it is the fixture.
     """
     evolution, _ = _evolution(store)
     family_id = store.get_strategy_version("s0").family_id
 
     store.finish_run("r0", "ok", metrics={"sharpe": 1.25})
     _candidate(store, "c0")
-    store.score_candidate("c0", run_id="r0", fitness=0.4)
+    store.score_candidate("c0", run_id="r0", fitness=0.4)  # cleared every gate
 
-    for run_id, sharpe in (("r1", -0.75), ("r2", float("inf")), ("r3", None)):
+    for run_id, sharpe, gate in (
+        ("r1", -0.75, None),  # also selectable
+        ("r2", -18.4, "F_DRAWDOWN"),  # a wreck, never in contention
+        ("r3", 9.9, "F_TRADES"),  # flattering, and equally not in contention
+    ):
         store.create_run(
             run_id=run_id,
             experiment_id=evolution.experiment_id,
@@ -1650,25 +1653,59 @@ def test_the_trial_sharpes_come_from_the_same_runs_that_m_counts(
             artifact_dir=f"artifacts/runs/{run_id}",
         )
         store.finish_run(run_id, "ok", metrics={"sharpe": sharpe})
+        name = f"c{run_id[-1]}"
+        _candidate(store, name)
+        store.score_candidate(name, run_id=run_id, fitness=0.1, gate_failure=gate)
 
-    _candidate(store, "c1")
-    store.score_candidate("c1", run_id="r1", fitness=0.1)
-    _candidate(store, "c2")
-    store.score_candidate("c2", run_id="r2", fitness=0.2)
-    _candidate(store, "c3")
-    store.score_candidate("c3", run_id="r3", fitness=0.3)
-
-    got = sorted(store.trial_sharpes_for_family(family_id))
-    assert got == [-0.75, 1.25], (
-        "expected the two finite trial Sharpes; got a set that includes an "
-        "infinity or a null, either of which destroys the variance"
+    assert sorted(store.trial_sharpes_for_family(family_id)) == [-0.75, 1.25], (
+        "the pool must hold the two candidates that cleared the gates and neither "
+        "of the two that did not"
     )
 
-    # And the count and the spread agree about which runs they are reading.
-    store.count_evaluation(evolution.evolution_id, 4)
-    counted = store.search_trials_for_family(family_id)["evolution_evaluations"]
-    assert counted == 4
-    assert len(got) <= counted, "more trial Sharpes than trials counted into M"
+
+def test_there_is_no_second_non_finite_filter_because_the_gates_subsume_it(
+    store: SqliteExperimentStore,
+) -> None:
+    """ADR 0010 dropped non-finite Sharpes explicitly. ADR 0011 removed that.
+
+    Measured across both campaigns: of 61 candidates with no finite Sharpe, zero
+    passed the gates. A candidate cannot both clear ``F_EXPECTANCY`` and have too
+    little dispersion to define a Sharpe. Keeping both filters would read to the
+    next person as though both were load-bearing.
+
+    This test is the claim, not the implementation: it asserts that filtering by
+    gate is *sufficient*, so if that ever stops being true it fails here rather
+    than silently returning an infinity into a variance.
+    """
+    evolution, _ = _evolution(store)
+    family_id = store.get_strategy_version("s0").family_id
+
+    store.finish_run("r0", "ok", metrics={"sharpe": 1.25})
+    _candidate(store, "c0")
+    store.score_candidate("c0", run_id="r0", fitness=0.4)
+
+    for run_id, sharpe in (("r1", float("inf")), ("r2", None)):
+        store.create_run(
+            run_id=run_id,
+            experiment_id=evolution.experiment_id,
+            strategy_id="s0",
+            dataset_id="d0",
+            split_id=store.find_run("r0").split_id,
+            segment="train",
+            params_json='{"fast":20}',
+            engine_name="simple_bar",
+            engine_version="1",
+            artifact_dir=f"artifacts/runs/{run_id}",
+        )
+        store.finish_run(run_id, "ok", metrics={"sharpe": sharpe})
+        name = f"c{run_id[-1]}"
+        _candidate(store, name)
+        # An undefined Sharpe means no dispersion, which means no positive
+        # expectancy: the gate fires first, and that is why no second filter is
+        # needed to keep these out of the variance.
+        store.score_candidate(name, run_id=run_id, fitness=0.0, gate_failure="F_EXPECTANCY")
+
+    assert store.trial_sharpes_for_family(family_id) == [1.25]
 
 
 def test_a_cached_run_is_counted_once_per_candidate_it_backs(

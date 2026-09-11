@@ -47,6 +47,7 @@ __all__ = [
     "moments",
     "probabilistic_sharpe",
     "sharpe_variance",
+    "sharpe_variance_upper_bound",
 ]
 
 #: Which formula produced a recorded verdict's ``M``. Stamped on every
@@ -110,6 +111,41 @@ def sharpe_variance(trial_sharpes: Sequence[float] | np.ndarray) -> float:
             n_trials=int(values.size),
         )
     return float(values.var(ddof=1))
+
+
+def sharpe_variance_upper_bound(
+    trial_sharpes: Sequence[float] | np.ndarray, *, alpha: float = 0.05
+) -> float:
+    """A one-sided upper confidence bound on the trial-Sharpe variance (ADR 0011).
+
+    The standard chi-square bound::
+
+        sigma_upper^2 = (n - 1) * s^2 / chi2_ppf(alpha, n - 1)
+
+    ``SR0`` is proportional to ``sigma``, so bounding ``sigma`` from above makes a
+    small selection pool produce a *harsher* benchmark rather than an absent one.
+    That is the whole point: a hard minimum pool size large enough to be
+    comfortable (twenty, thirty) would leave check 1 permanently unmeasured, and
+    "permanently unmeasured" carries exactly as much information as "permanently
+    failing". This has no cliff, errs toward rejecting, and tightens on its own as
+    pools grow — x1.92 on sigma at n=7, x1.28 at n=30, x1.04 at n=1000.
+
+    Args:
+        trial_sharpes: Per-period Sharpe ratios of the selection pool.
+        alpha: One-sided confidence level. Smaller is more conservative.
+
+    Raises:
+        ConfigError: fewer than two trials, from :func:`sharpe_variance`. Two is
+            the hard floor, and it is arithmetic rather than policy: below it
+            there is no variance to bound.
+    """
+    values = np.asarray(list(trial_sharpes), dtype="float64")
+    point = sharpe_variance(values)
+    n = int(values.size)
+    critical = float(stats.chi2.ppf(alpha, n - 1))
+    if not math.isfinite(critical) or critical <= 0.0:  # pragma: no cover - guarded by alpha bounds
+        return point
+    return float((n - 1) * point / critical)
 
 
 def expected_max_sharpe(n_trials: int, var_sr: float) -> float:

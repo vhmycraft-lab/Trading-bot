@@ -21,7 +21,7 @@ clean strategy; it is a strategy nobody finished checking.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
@@ -42,7 +42,7 @@ from quantlab.core.validation.deflated_sharpe import (
     deannualise,
     deflated_sharpe,
     moments,
-    sharpe_variance,
+    sharpe_variance_upper_bound,
 )
 from quantlab.core.validation.permutation import market_permutation_test, trade_shuffle_test
 from quantlab.core.validation.pipeline import Evidence
@@ -188,10 +188,12 @@ def run(
 
     # -- check 1: the deflated Sharpe ratio ----------------------------------
     trials = _trials_accounted(store, version.family_id)
+    pool = _trial_sharpes(store, version.family_id, int(val_result.bars_per_year))
     dsr = _deflated(
         val_result,
-        trials["total"],
-        _trial_sharpes(store, version.family_id, int(val_result.bars_per_year)),
+        _selection_pool_m(trials, pool),
+        pool,
+        dispersion_alpha=settings.dsr_dispersion_alpha,
     )
 
     # -- check 3 and G_PERM: market permutations -----------------------------
@@ -274,7 +276,13 @@ def _buy_and_hold(loader: StrategyLoader, bars: BarFrame, config: BacktestConfig
     return compute_metrics(evaluator.evaluate(bars, {}, config))
 
 
-def _deflated(result: Any, n_trials: int, trial_sharpes: Sequence[float]) -> float | None:
+def _deflated(
+    result: Any,
+    n_trials: int,
+    trial_sharpes: Sequence[float],
+    *,
+    dispersion_alpha: float = 0.05,
+) -> float | None:
     """Check 1, from the validation equity curve and the search that produced it.
 
     ``n_trials`` is section 14.4's ``M`` — every evaluation that led here, from
@@ -292,14 +300,22 @@ def _deflated(result: Any, n_trials: int, trial_sharpes: Sequence[float]) -> flo
     *returns* — and called it a conservative stand-in. It is not a stand-in at
     all: the variance of a return series and the variance of a set of Sharpe
     ratios are different quantities in different units, and on the first real
-    campaign the substitute was sixty times too small, putting ``SR0`` at 1.67
-    annualised where the trials themselves said 12.88. It erred toward passing.
-    ADR 0010.
+    campaign the substitute was thirty-five times too small. It erred toward
+    passing. ADR 0010.
+
+    Both now describe the **selection pool** — the candidates that cleared the
+    hard fitness gates — rather than every evaluation the search made. Over all
+    704 evaluations the dispersion was dominated by zero-trade genomes and
+    high-turnover wrecks that were never selectable, which put ``SR0`` at 11.2
+    annualised and made check 1 unreachable for anything real. ADR 0011.
+
+    The dispersion is a chi-square **upper** bound, not the point estimate, so a
+    small pool produces a harsher benchmark rather than an absent one.
 
     Returns ``None`` — check 1 unmeasured, charging nothing and saying so — when
-    the search recorded fewer than two trials to measure dispersion from. That is
-    louder than a number nobody can defend, and it is the same answer this
-    pipeline gives every other input it does not have.
+    the pool holds fewer than two trials. Never a fall back to the unfiltered
+    population: that is the thing ADR 0011 removes, and reaching for it here would
+    put it straight back.
     """
     equity = np.asarray(result.equity, dtype="float64")
     if equity.size < 3:
@@ -311,7 +327,7 @@ def _deflated(result: Any, n_trials: int, trial_sharpes: Sequence[float]) -> flo
     return deflated_sharpe(
         sharpe,
         n_trials=max(1, int(n_trials)),
-        var_sr=sharpe_variance(trial_sharpes),
+        var_sr=sharpe_variance_upper_bound(trial_sharpes, alpha=dispersion_alpha),
         n_periods=n_periods,
         skew=skew,
         kurtosis=kurtosis,
@@ -332,6 +348,29 @@ def _trial_sharpes(store: Any, family_id: str, bars_per_year: int) -> list[float
         return []
     annualised = store.trial_sharpes_for_family(family_id)
     return [deannualise(value, bars_per_year) for value in annualised]
+
+
+def _selection_pool_m(trials: Mapping[str, int], pool: Sequence[float]) -> int:
+    """``M`` over the selection pool rather than over every evaluation (ADR 0011).
+
+    The evolution term becomes ``len(pool)`` — the candidates that cleared the
+    hard fitness gates and could therefore have been selected — because that is
+    the population the dispersion is measured over, and equation 5 is only
+    meaningful when its two inputs describe one population. Counting every
+    evaluation while measuring dispersion over the pool is what made check 1
+    unreachable; counting the pool while measuring dispersion over everything
+    would be the same error mirrored.
+
+    The Optuna and validation-touch terms are carried through unchanged. They are
+    genuine selection events — a refined parameter set and a re-validated family
+    are both things somebody chose — and neither contributes a candidate to the
+    evolution pool, so neither is double-counted. They do leave ``M`` slightly
+    larger than the population the dispersion covers; that is the conservative
+    direction, and it is stated here rather than quietly rounded away.
+    """
+    optuna = int(trials.get("optuna_trials", 0))
+    touches = int(trials.get("validation_touches", 0))
+    return len(pool) + optuna + touches
 
 
 def _trials_accounted(store: Any, family_id: str) -> dict[str, int]:

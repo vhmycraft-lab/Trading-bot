@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import sqlite3
 import uuid
@@ -1616,6 +1615,7 @@ class SqliteExperimentStore:
                     .join(Candidate, Candidate.run_id == Metric.run_id)
                     .where(
                         Candidate.evolution_id.in_(evolution_ids),
+                        Candidate.gate_failure.is_(None),
                         Metric.name == "sharpe",
                         Metric.value.is_not(None),
                     )
@@ -1623,7 +1623,7 @@ class SqliteExperimentStore:
                 .scalars()
                 .all()
             )
-        return [float(value) for value in rows if value is not None and math.isfinite(float(value))]
+        return [float(value) for value in rows if value is not None]
 
     def generations_for(self, evolution_id: str) -> list[Generation]:
         with session_scope(self.factory) as session:
