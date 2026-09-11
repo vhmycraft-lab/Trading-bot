@@ -37,18 +37,49 @@ substitute is on the high side of the quantity it stands in for.
 
 ## Measurement
 
-The first real campaign (`rome-first-run`, evolution `afbc399cd3f39991`, 256
-evaluations on BTC/USDT 15m) recorded 218 finite trial Sharpes. Both quantities,
-computed from it:
+> **Amended.** The table below was first published computed at
+> `bars_per_year = 35040`, a 15-minute assumption. The data is **1h**
+> (`bars_per_year = 8760`). Per-bar variance is annualised variance divided by
+> `bars_per_year`, so the error moved both quantities and the ratio between them.
+> The numbers here are the corrected ones; the direction, the magnitude class and
+> the decision are unchanged. See "Reconciling the timeframe" below.
 
-| | per-bar variance | sd, annualised | `SR0` at M=256 |
+Measured across the 704 candidates of the two campaigns on BTC/USDT **1h**
+(`rome-first-run` `afbc399cd3f39991`, and the crashed `first-real-campaign`
+`e2391416ead7b09f`), 643 of which recorded a finite Sharpe:
+
+| | per-bar variance | sd, annualised | `SR0` at M=704 |
 |---|---:|---:|---:|
-| variance of the 218 trial Sharpes | 5.84e-04 | 4.525 | **12.88** |
-| variance of one run's returns | 9.78e-06 | 0.585 | **1.67** |
+| variance of the trial Sharpes | 1.45e-03 | 3.559 | **11.22** |
+| variance of one run's returns | 4.16e-05 | 0.604 | **1.90** |
 
-The substitute is **59.7x too small** in variance and puts the benchmark
-**7.7x lower** than the trials themselves say. It errs toward passing, which is
+The substitute is **34.8x too small** in variance and puts the benchmark
+**5.9x lower** than the trials themselves say. It errs toward passing, which is
 the one direction this correction exists to prevent.
+
+### Reconciling the timeframe
+
+The campaign report accompanying this work said 15m and this ADR inherited it.
+Neither was checked against the store. Three artifacts were then consulted, and
+all three agree on **1h**:
+
+* the `dataset` row bound into every run of both campaigns
+  (`aec45c9df07a9a94`, `timeframe = '1h'`);
+* its own span against its bar count — 47,107 hours over 47,108 bars, exactly
+  60.00 minutes per bar;
+* the loaded bars' `ts_open` deltas, a constant 3,600,000 ms.
+
+The **`dataset` row is the authoritative one**, and `configs/default.yaml` is
+not. The config is mutable after the fact; the `dataset_id` is a foreign key on
+every `run`, so a run can always be traced to the bars it actually executed on
+no matter what the config says today. A reproducibility claim that rests on a
+config file is a claim about the present, not about the run.
+
+**No shipped code was affected.** `_deflated` takes `bars_per_year` from
+`result.bars_per_year`, which the engine derives from the dataset's timeframe, so
+the implementation always used 8760. The error was confined to hand-computed
+figures in prose — which is its own lesson about arithmetic that never passes
+through a test.
 
 They are not two estimates of one number. A variance of returns and a variance
 of Sharpe ratios are different quantities in different units; the ratio between
