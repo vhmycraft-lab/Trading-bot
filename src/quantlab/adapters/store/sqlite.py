@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import uuid
@@ -1574,6 +1575,55 @@ class SqliteExperimentStore:
         }
         counts["total"] = sum(counts.values())
         return counts
+
+    def trial_sharpes_for_family(self, family_id: str) -> list[float]:
+        """The annualised Sharpe of every trial counted in this family's ``M``.
+
+        Section 14.4's ``SR0`` is a function of two things: how many trials the
+        search ran, and how widely those trials scored. :meth:`search_trials_for_family`
+        supplies the first. This supplies the second, and resolves the runs the
+        *same* way — every evolution run holding a candidate of one of the family's
+        versions — so ``M`` and the dispersion describe one population of trials
+        rather than two. Bailey and López de Prado's equation 5 is only meaningful
+        if they do.
+
+        Non-finite Sharpes are dropped rather than clamped. A trial whose Sharpe
+        is infinite carries no dispersion information, and including it would make
+        the variance infinite and ``SR0`` with it.
+
+        A run reached by a cache hit backs more than one candidate, and its Sharpe
+        is returned once per candidate. That is deliberate and must not be
+        "fixed" with ``DISTINCT``: ``evolution_run.n_evaluations`` counts a cache
+        hit as an evaluation, so removing the repeat here would leave ``M``
+        counting a population the dispersion no longer describes — which is the
+        desynchronisation ADR 0010 exists to prevent, reintroduced from the other
+        end.
+
+        Returns:
+            Annualised Sharpe ratios, unordered. The caller de-annualises, because
+            only the caller knows the bar count the deflation is working in.
+        """
+        with session_scope(self.factory) as session:
+            versions = select(StrategyVersion.strategy_id).where(
+                StrategyVersion.family_id == family_id
+            )
+            evolution_ids = select(Candidate.evolution_id).where(
+                Candidate.strategy_id.in_(versions)
+            )
+            rows = (
+                session.execute(
+                    select(Metric.value)
+                    .join(Candidate, Candidate.run_id == Metric.run_id)
+                    .where(
+                        Candidate.evolution_id.in_(evolution_ids),
+                        Metric.name == "sharpe",
+                        Metric.value.is_not(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [float(value) for value in rows if value is not None and math.isfinite(float(value))]
 
     def generations_for(self, evolution_id: str) -> list[Generation]:
         with session_scope(self.factory) as session:

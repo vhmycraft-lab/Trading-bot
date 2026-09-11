@@ -1613,6 +1613,103 @@ def test_m_counts_the_whole_search_and_not_just_the_validation_touches(
     }
 
 
+def test_the_trial_sharpes_come_from_the_same_runs_that_m_counts(
+    store: SqliteExperimentStore,
+) -> None:
+    """``SR0`` is a function of two things, and they have to describe one search.
+
+    ``M`` says how many trials ran; the variance of the trial Sharpes says how
+    widely they scored. Bailey and López de Prado's equation 5 multiplies one by a
+    function of the other, so a dispersion drawn from a different population than
+    the count is not a conservative approximation of anything — it is two searches
+    pretending to be one. ADR 0010.
+
+    A Sharpe that is not finite is dropped rather than clamped: it carries no
+    dispersion, and one of them would make the variance infinite and ``SR0`` with
+    it — which is the *safe* direction and still wrong, because nothing would ever
+    pass check 1 again for reasons no operator could read off the verdict.
+    """
+    evolution, _ = _evolution(store)
+    family_id = store.get_strategy_version("s0").family_id
+
+    store.finish_run("r0", "ok", metrics={"sharpe": 1.25})
+    _candidate(store, "c0")
+    store.score_candidate("c0", run_id="r0", fitness=0.4)
+
+    for run_id, sharpe in (("r1", -0.75), ("r2", float("inf")), ("r3", None)):
+        store.create_run(
+            run_id=run_id,
+            experiment_id=evolution.experiment_id,
+            strategy_id="s0",
+            dataset_id="d0",
+            split_id=store.find_run("r0").split_id,
+            segment="train",
+            params_json='{"fast":20}',
+            engine_name="simple_bar",
+            engine_version="1",
+            artifact_dir=f"artifacts/runs/{run_id}",
+        )
+        store.finish_run(run_id, "ok", metrics={"sharpe": sharpe})
+
+    _candidate(store, "c1")
+    store.score_candidate("c1", run_id="r1", fitness=0.1)
+    _candidate(store, "c2")
+    store.score_candidate("c2", run_id="r2", fitness=0.2)
+    _candidate(store, "c3")
+    store.score_candidate("c3", run_id="r3", fitness=0.3)
+
+    got = sorted(store.trial_sharpes_for_family(family_id))
+    assert got == [-0.75, 1.25], (
+        "expected the two finite trial Sharpes; got a set that includes an "
+        "infinity or a null, either of which destroys the variance"
+    )
+
+    # And the count and the spread agree about which runs they are reading.
+    store.count_evaluation(evolution.evolution_id, 4)
+    counted = store.search_trials_for_family(family_id)["evolution_evaluations"]
+    assert counted == 4
+    assert len(got) <= counted, "more trial Sharpes than trials counted into M"
+
+
+def test_a_cached_run_is_counted_once_per_candidate_it_backs(
+    store: SqliteExperimentStore,
+) -> None:
+    """``M`` counts a cache hit as an evaluation, so the dispersion must too.
+
+    Section 11.2's cache lets a re-derived genome reuse an existing run, and
+    ``generation.n_cache_hits`` is recorded *alongside* ``n_evaluated`` rather than
+    subtracted from it — so the run enters ``M`` once per candidate. Returning its
+    Sharpe once would leave ``M`` describing a larger population than the variance
+    does, which is ADR 0010's failure reintroduced from the other end.
+
+    This is the test that a future ``DISTINCT`` has to argue with.
+    """
+    _evolution(store)
+    family_id = store.get_strategy_version("s0").family_id
+    store.finish_run("r0", "ok", metrics={"sharpe": 1.25})
+
+    _candidate(store, "c0")
+    store.score_candidate("c0", run_id="r0", fitness=0.4)
+    _candidate(store, "c1", gen_index=1)
+    store.score_candidate("c1", run_id="r0", fitness=0.4)  # the cache hit
+
+    assert sorted(store.trial_sharpes_for_family(family_id)) == [1.25, 1.25]
+
+
+def test_a_family_with_no_search_behind_it_has_no_trial_sharpes(
+    store: SqliteExperimentStore,
+) -> None:
+    """The honest floor, matching ``search_trials_for_family``'s zero.
+
+    An empty sequence is what makes check 1 report *unmeasured* rather than reach
+    for a number. The old code reached: it read the validation run's own return
+    variance and called it the trial dispersion.
+    """
+    _run(store)
+    family_id = store.get_strategy_version("s0").family_id
+    assert list(store.trial_sharpes_for_family(family_id)) == []
+
+
 def test_migration_0004_marks_every_pre_existing_verdict_as_superseded(
     empty_engine: Engine,
 ) -> None:

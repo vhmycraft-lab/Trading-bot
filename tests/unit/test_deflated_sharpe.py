@@ -247,6 +247,13 @@ class _Curve:
         self.n_bars = len(equity)
 
 
+#: A fixed set of per-bar trial Sharpes, so ``M`` is the only thing moving in the
+#: two tests below. Their dispersion is what ``SR0`` scales by (ADR 0010); holding
+#: it constant is what makes "larger search, harder deflation" a statement about
+#: ``M`` alone.
+_TRIALS = [0.02, -0.01, 0.005, -0.03, 0.015, 0.0, -0.008, 0.011]
+
+
 def _curve(n: int = 600, drift: float = 1.0008) -> _Curve:
     equity, value = [], 10_000.0
     for index in range(n):
@@ -268,7 +275,7 @@ def test_a_larger_search_deflates_harder() -> None:
     from quantlab.cli.validate import _deflated
 
     curve = _curve()
-    scores = [_deflated(curve, m) for m in (1, 10, 100, 1_000, 10_000)]
+    scores = [_deflated(curve, m, _TRIALS) for m in (1, 10, 100, 1_000, 10_000)]
     assert all(score is not None for score in scores)
     assert scores == sorted(scores, reverse=True), scores
     assert scores[0] > scores[-1], "M made no difference at all"
@@ -290,8 +297,8 @@ def test_the_deflation_is_charged_the_search_and_not_the_bar_count() -> None:
     from quantlab.cli.validate import _deflated
 
     curve = _curve(600)
-    under_old_rule = _deflated(curve, max(1, curve.n_bars // 100))  # M = 6
-    under_real_search = _deflated(curve, 4_000)  # 125 generations x 32
+    under_old_rule = _deflated(curve, max(1, curve.n_bars // 100), _TRIALS)  # M = 6
+    under_real_search = _deflated(curve, 4_000, _TRIALS)  # 125 generations x 32
     assert under_real_search < under_old_rule, (
         "a real campaign must be deflated harder than the old bar-count stand-in"
     )
@@ -305,9 +312,16 @@ def test_m_cannot_be_derived_from_the_result_any_more() -> None:
     route to the real count — and opened with ``del store, strategy_id, settings``
     before falling back to the bar count. Keeping the parameter list this narrow is
     what stops that from quietly happening again.
+
+    ``trial_sharpes`` (ADR 0010) is a bare sequence of floats and so is not such a
+    route: it carries dispersion and nothing that could be counted into ``M``. The
+    forbidden names are asserted separately from the exact list, so adding a fourth
+    parameter one day still has to say out loud that it is not the store.
     """
     import inspect as _inspect
 
     from quantlab.cli.validate import _deflated
 
-    assert list(_inspect.signature(_deflated).parameters) == ["result", "n_trials"]
+    parameters = list(_inspect.signature(_deflated).parameters)
+    assert parameters == ["result", "n_trials", "trial_sharpes"]
+    assert not {"store", "strategy_id", "settings", "family_id"} & set(parameters)

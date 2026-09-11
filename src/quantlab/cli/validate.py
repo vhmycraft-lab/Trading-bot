@@ -21,6 +21,7 @@ clean strategy; it is a strategy nobody finished checking.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Any
@@ -37,7 +38,12 @@ from quantlab.core.errors import ConfigError, StoreError
 from quantlab.core.hashing import short_id
 from quantlab.core.metrics import compute_metrics
 from quantlab.core.types import BacktestConfig, BarFrame, SlippageConfig
-from quantlab.core.validation.deflated_sharpe import deflated_sharpe, moments
+from quantlab.core.validation.deflated_sharpe import (
+    deannualise,
+    deflated_sharpe,
+    moments,
+    sharpe_variance,
+)
 from quantlab.core.validation.permutation import market_permutation_test, trade_shuffle_test
 from quantlab.core.validation.pipeline import Evidence
 from quantlab.core.validation.pipeline import validate as run_validation
@@ -182,7 +188,11 @@ def run(
 
     # -- check 1: the deflated Sharpe ratio ----------------------------------
     trials = _trials_accounted(store, version.family_id)
-    dsr = _deflated(val_result, trials["total"])
+    dsr = _deflated(
+        val_result,
+        trials["total"],
+        _trial_sharpes(store, version.family_id, int(val_result.bars_per_year)),
+    )
 
     # -- check 3 and G_PERM: market permutations -----------------------------
     permutation_p = None
@@ -264,8 +274,8 @@ def _buy_and_hold(loader: StrategyLoader, bars: BarFrame, config: BacktestConfig
     return compute_metrics(evaluator.evaluate(bars, {}, config))
 
 
-def _deflated(result: Any, n_trials: int) -> float | None:
-    """Check 1, from the validation equity curve.
+def _deflated(result: Any, n_trials: int, trial_sharpes: Sequence[float]) -> float | None:
+    """Check 1, from the validation equity curve and the search that produced it.
 
     ``n_trials`` is section 14.4's ``M`` — every evaluation that led here, from
     :func:`_trials_accounted`. It is passed in rather than derived here because
@@ -276,24 +286,52 @@ def _deflated(result: Any, n_trials: int) -> float | None:
     backtest. See ``docs/DECISIONS`` and the ``m_formula_version`` stamp on every
     verdict row.
 
-    The variance of the trial Sharpe ratios is not recoverable from one run, so
-    it is estimated from the per-bar returns themselves — a conservative stand-in
-    that is stated here rather than hidden: with a wider spread the deflation
-    would be harsher, never gentler.
+    ``trial_sharpes`` are those same trials' **per-bar** Sharpe ratios, and they
+    are the other half of ``SR0``. An earlier version passed
+    ``np.var(returns, ddof=1)`` here — the variance of this one run's per-bar
+    *returns* — and called it a conservative stand-in. It is not a stand-in at
+    all: the variance of a return series and the variance of a set of Sharpe
+    ratios are different quantities in different units, and on the first real
+    campaign the substitute was sixty times too small, putting ``SR0`` at 1.67
+    annualised where the trials themselves said 12.88. It erred toward passing.
+    ADR 0010.
+
+    Returns ``None`` — check 1 unmeasured, charging nothing and saying so — when
+    the search recorded fewer than two trials to measure dispersion from. That is
+    louder than a number nobody can defend, and it is the same answer this
+    pipeline gives every other input it does not have.
     """
     equity = np.asarray(result.equity, dtype="float64")
     if equity.size < 3:
+        return None
+    if len(trial_sharpes) < 2:
         return None
     returns = np.diff(equity) / np.where(equity[:-1] != 0.0, equity[:-1], 1.0)
     sharpe, skew, kurtosis, n_periods = moments(returns)
     return deflated_sharpe(
         sharpe,
         n_trials=max(1, int(n_trials)),
-        var_sr=float(np.var(returns, ddof=1)),
+        var_sr=sharpe_variance(trial_sharpes),
         n_periods=n_periods,
         skew=skew,
         kurtosis=kurtosis,
     )
+
+
+def _trial_sharpes(store: Any, family_id: str, bars_per_year: int) -> list[float]:
+    """The search's trial Sharpes, per bar, ready for :func:`sharpe_variance`.
+
+    The store keeps them annualised, because that is how section 10 defines
+    ``MetricSet.sharpe``. The deflation works per bar. De-annualising here rather
+    than in the store keeps the conversion next to the ``n_periods`` it has to
+    agree with — mixing the two scales is the error :func:`deannualise` exists to
+    name, and it produces no exception, just a deflated Sharpe of 1.0 for
+    everything.
+    """
+    if bars_per_year <= 0:
+        return []
+    annualised = store.trial_sharpes_for_family(family_id)
+    return [deannualise(value, bars_per_year) for value in annualised]
 
 
 def _trials_accounted(store: Any, family_id: str) -> dict[str, int]:

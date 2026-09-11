@@ -496,6 +496,16 @@ class ExperimentStore(Protocol):
         """
         ...
 
+    def trial_sharpes_for_family(self, family_id: str) -> Sequence[float]:
+        """The annualised Sharpe of every trial counted in this family's ``M``.
+
+        The dispersion half of section 14.4's ``SR0``. Resolved over the same runs
+        as :meth:`search_trials_for_family`, so the count and the spread describe
+        one population of trials. Understating the spread lowers the bar exactly
+        as understating ``M`` does.
+        """
+        ...
+
     def generations_for(self, evolution_id: str) -> Sequence[Any]:
         """A run's generations, oldest first."""
         ...
