@@ -29,7 +29,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final
 
-from quantlab.core.config import FitnessSettings
+from quantlab.core.config import FitnessGates, FitnessSettings
 from quantlab.core.errors import ConfigError
 from quantlab.core.metrics import MetricSet
 from quantlab.core.types import Trade
@@ -172,8 +172,31 @@ class FitnessResult:
 # ---------------------------------------------------------------------------
 # stage 1 — hard gates
 # ---------------------------------------------------------------------------
+def _drawdown_ceiling(benchmark_drawdown: float | None, gates: FitnessGates) -> float:
+    """The drawdown a candidate may not exceed on **this** window (ADR 0012).
+
+    ``benchmark_drawdown`` is buy-and-hold's drawdown over the same bars the
+    candidate was evaluated on, and it is a parameter rather than a lookup for
+    exactly that reason: with a per-generation ``TrainingEnvironment`` the window
+    moves while the symbol and the segment name stay put, so any ceiling derived
+    from configuration instead of from the bars would be wrong in a way nothing
+    would report.
+
+    ``None`` means the window was too short to have a benchmark. The absolute
+    ``max_drawdown`` then applies — not as a second opinion, but as the only one
+    available. A candidate must not be rejected for a measurement we failed to
+    make.
+    """
+    if benchmark_drawdown is None:
+        return gates.max_drawdown
+    return gates.max_drawdown_vs_benchmark * benchmark_drawdown
+
+
 def _failed_gate(
-    metrics: MetricSet, removal: TradeRemovalReport, settings: FitnessSettings
+    metrics: MetricSet,
+    removal: TradeRemovalReport,
+    settings: FitnessSettings,
+    benchmark_drawdown: float | None = None,
 ) -> str | None:
     """The first gate this candidate fails, or ``None`` (spec section 13.3).
 
@@ -190,7 +213,7 @@ def _failed_gate(
     if metrics.n_trades < gates.min_trades:
         return "F_TRADES"
     drawdown = metrics.max_drawdown
-    if drawdown is not None and drawdown > gates.max_drawdown:
+    if drawdown is not None and drawdown > _drawdown_ceiling(benchmark_drawdown, gates):
         return "F_DRAWDOWN"
     # An undefined retention means total pnl was not positive (see
     # TradeRemovalReport.is_defined). Skipping it here let a ledger with a
@@ -284,17 +307,25 @@ def _penalties(
     *,
     n_free_params: int,
     logic_lines: int,
+    drawdown_ceiling: float,
 ) -> dict[str, float]:
     """Every penalty of section 13.3's table, each in ``[0, 1]``.
 
     A penalty that does not apply is ``1.0`` and is still reported, so the product
     can be read off the result and a missing penalty is visibly absent rather than
     silently omitted.
+
+    ``drawdown_ceiling`` is the *same* effective ceiling ``_failed_gate`` used, not
+    ``gates.max_drawdown`` read a second time. The penalty ramps toward the line
+    the gate actually enforces, so "penalise as you approach it, reject at it" is
+    one threshold rather than two that can drift apart — which is what happened
+    when the relative gate of ADR 0012 landed and the absolute value this used to
+    read became a fallback.
     """
     penalties = settings.penalties
     return {
         "p_drawdown": _linear_decay(
-            metrics.max_drawdown, soft=penalties.drawdown_soft, hard=settings.gates.max_drawdown
+            metrics.max_drawdown, soft=penalties.drawdown_soft, hard=drawdown_ceiling
         ),
         "p_trades": (
             1.0
@@ -437,6 +468,7 @@ def compute_fitness(
     *,
     n_free_params: int = 0,
     logic_lines: int = 0,
+    benchmark_drawdown: float | None = None,
 ) -> FitnessResult:
     """Score one candidate (spec section 13.3).
 
@@ -453,6 +485,12 @@ def compute_fitness(
             here re-checks them.
         n_free_params: Declared parameter count, for ``p_complexity``.
         logic_lines: Body length from the AST check, for ``p_complexity``.
+        benchmark_drawdown: Buy-and-hold's maximum drawdown over the **same
+            window** ``metrics`` was measured on, for the relative ``F_DRAWDOWN``
+            of ADR 0012. Derive it from the bars the candidate ran on — never
+            from a symbol-level or segment-level figure, which a per-generation
+            environment makes stale without saying so. ``None`` falls back to the
+            absolute ``gates.max_drawdown``.
 
     Returns:
         A :class:`FitnessResult` in ``[0, 1]``, or one carrying
@@ -460,7 +498,8 @@ def compute_fitness(
     """
     removal = trade_removal_report(trades, settings.penalties.removal_k)
 
-    gate_failure = _failed_gate(metrics, removal, settings)
+    ceiling = _drawdown_ceiling(benchmark_drawdown, settings.gates)
+    gate_failure = _failed_gate(metrics, removal, settings, benchmark_drawdown)
     if gate_failure is not None:
         return FitnessResult(fitness=FITNESS_REJECTED, gate_failure=gate_failure, removal=removal)
 
@@ -477,6 +516,7 @@ def compute_fitness(
         settings,
         n_free_params=n_free_params,
         logic_lines=logic_lines,
+        drawdown_ceiling=ceiling,
     )
     fitness = base_score
     for value in penalties.values():

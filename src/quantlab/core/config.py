@@ -536,7 +536,15 @@ class FitnessGates(_Section):
 
     min_expectancy_pct: float = Field(default=0.0, ge=0)
     min_trades: int = Field(default=30, ge=0)
-    max_drawdown: float = Field(default=0.50, gt=0, le=1)
+    #: Ceiling on drawdown as a multiple of buy-and-hold's over the **same**
+    #: window (ADR 0012). ``1.0`` means "no worse on drawdown than holding the
+    #: asset" — the comparison ``G_BENCH`` already makes at validation.
+    max_drawdown_vs_benchmark: float = Field(default=1.00, gt=0)
+    #: Fallback ceiling, used only when the benchmark is unavailable — a window
+    #: too short to have a drawdown. Not a second gate: whichever applies, only
+    #: one does. ``1.0`` admits anything short of total ruin, because a candidate
+    #: must not be rejected for a benchmark *we* failed to compute.
+    max_drawdown: float = Field(default=1.00, gt=0, le=1)
     #: Retention after removing the single best trade; below this, reject.
     min_retention_top1: float = Field(default=0.0, le=1)
 

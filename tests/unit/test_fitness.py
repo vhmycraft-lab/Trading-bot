@@ -94,13 +94,18 @@ def test_a_ninety_percent_win_rate_cannot_rescue_negative_expectancy() -> None:
 
 
 def test_a_sixty_percent_drawdown_is_rejected_whatever_else_is_true() -> None:
-    """Every other component at its best still scores ``FITNESS_REJECTED``."""
+    """Every other component at its best still scores ``FITNESS_REJECTED``.
+
+    Judged against a benchmark that fell 40% (ADR 0012): drawing down 60% where
+    the asset drew down 40% is worse than holding it, and no Sortino redeems it.
+    """
     result = compute_fitness(
         metrics(max_drawdown=0.60, sortino=10.0, cagr=5.0, consistency=1.0),
         GOOD_TRADES,
         perfect_inner(),
         None,
         SETTINGS,
+        benchmark_drawdown=0.40,
     )
     assert result.fitness == FITNESS_REJECTED
     assert result.gate_failure == "F_DRAWDOWN"
@@ -271,11 +276,47 @@ def test_a_penalty_that_does_not_apply_is_reported_as_one() -> None:
 
 
 def test_the_drawdown_penalty_ramps_between_the_soft_and_hard_thresholds() -> None:
-    """Halfway from ``drawdown_soft`` (0.20) to ``gates.max_drawdown`` (0.50)."""
+    """Halfway from ``drawdown_soft`` (0.20) to the ceiling the gate enforces.
+
+    Since ADR 0012 that ceiling is ``max_drawdown_vs_benchmark x benchmark``, so a
+    benchmark of 0.50 puts the hard end at 0.50 and 0.35 is the midpoint.
+    """
     result = compute_fitness(
-        metrics(max_drawdown=0.35), GOOD_TRADES, perfect_inner(), None, SETTINGS
+        metrics(max_drawdown=0.35),
+        GOOD_TRADES,
+        perfect_inner(),
+        None,
+        SETTINGS,
+        benchmark_drawdown=0.50,
     )
     assert result.penalties["p_drawdown"] == pytest.approx(0.5, abs=1e-12)
+
+
+def test_the_drawdown_penalty_follows_the_same_ceiling_the_gate_enforces() -> None:
+    """The penalty and the gate read one threshold, not two.
+
+    They were separate reads of ``gates.max_drawdown`` until ADR 0012 made that
+    value a fallback, at which point the penalty silently ramped toward 1.00 while
+    the gate rejected at the benchmark. Same drawdown, harsher window, weaker
+    penalty — because the line it is measured against moved.
+    """
+    harsh = compute_fitness(
+        metrics(max_drawdown=0.35),
+        GOOD_TRADES,
+        perfect_inner(),
+        None,
+        SETTINGS,
+        benchmark_drawdown=0.80,
+    )
+    calm = compute_fitness(
+        metrics(max_drawdown=0.35),
+        GOOD_TRADES,
+        perfect_inner(),
+        None,
+        SETTINGS,
+        benchmark_drawdown=0.40,
+    )
+    assert harsh.penalties["p_drawdown"] > calm.penalties["p_drawdown"]
 
 
 def test_the_trades_penalty_is_the_ratio_to_the_soft_floor() -> None:
@@ -363,9 +404,21 @@ def test_the_complexity_penalty_compounds_per_excess_parameter() -> None:
 
 def test_penalties_multiply_so_two_problems_compound() -> None:
     """Section 13.3's stated reason for multiplying rather than subtracting."""
-    one = compute_fitness(metrics(max_drawdown=0.35), GOOD_TRADES, perfect_inner(), None, SETTINGS)
+    one = compute_fitness(
+        metrics(max_drawdown=0.35),
+        GOOD_TRADES,
+        perfect_inner(),
+        None,
+        SETTINGS,
+        benchmark_drawdown=0.50,
+    )
     two = compute_fitness(
-        metrics(max_drawdown=0.35, n_trades=50.0), GOOD_TRADES, perfect_inner(), None, SETTINGS
+        metrics(max_drawdown=0.35, n_trades=50.0),
+        GOOD_TRADES,
+        perfect_inner(),
+        None,
+        SETTINGS,
+        benchmark_drawdown=0.50,
     )
     assert two.penalties["p_drawdown"] == pytest.approx(0.5, abs=1e-12)
     assert two.penalties["p_trades"] == pytest.approx(0.5, abs=1e-12)

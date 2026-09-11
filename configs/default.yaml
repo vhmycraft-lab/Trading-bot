@@ -123,7 +123,14 @@ evolution:
     gates:                        # failing any gate sets fitness to FITNESS_REJECTED
       min_expectancy_pct: 0.0
       min_trades: 30
-      max_drawdown: 0.50
+      # Drawdown is judged against buy-and-hold over the SAME window (ADR 0012).
+      # 1.0 = may not be worse on drawdown than holding the asset. BTC B&H draws
+      # down 70-84%, so the old absolute 0.50 demanded a strategy be twice as
+      # good on risk as the asset and could not tell 55%-when-B&H-was-80% from
+      # 45%-when-B&H-was-30%.
+      max_drawdown_vs_benchmark: 1.00
+      # Used only when no benchmark exists for the window. Not a second gate.
+      max_drawdown: 1.00
       min_retention_top1: 0.0     # must still be profitable without its single best trade
     penalties:
       drawdown_soft: 0.20

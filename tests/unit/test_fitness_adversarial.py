@@ -322,7 +322,19 @@ def test_the_metric_window_is_still_sensitive_to_warm_up(settings) -> None:
     def at(warmup: int):
         result = a_result(equity, trades).model_copy(update={"warmup_bars": warmup})
         metrics = compute_metrics(result)
-        return metrics, compute_fitness(metrics, trades, InnerFoldReport(), None, settings.fitness)
+        return metrics, compute_fitness(
+            metrics,
+            trades,
+            InnerFoldReport(),
+            None,
+            settings.fitness,
+            # Pinned at the ceiling this fixture's recorded numbers were measured
+            # under, so ADR 0012 making the ceiling relative does not silently
+            # rewrite the size of the warm-up prize. The prize is the point; the
+            # ceiling is scenery, and scenery that moves would make the two
+            # constants below incomparable with the ones ADR 0007 recorded.
+            benchmark_drawdown=0.50,
+        )
 
     honest_metrics, honest = at(0)
     trimmed_metrics, trimmed = at(900)

@@ -98,7 +98,11 @@ def test_fitness_defaults(config: AppConfig) -> None:
     assert f.targets.expectancy_pct == 0.002
     assert f.targets.profit_factor == 1.5
     assert f.gates.min_trades == 30
-    assert f.gates.max_drawdown == 0.50
+    # ADR 0012: the drawdown gate is relative to buy-and-hold over the same
+    # window. max_drawdown survives only as the fallback for a window with no
+    # benchmark, which is why it is now 1.00 rather than a second, tighter rule.
+    assert f.gates.max_drawdown_vs_benchmark == 1.00
+    assert f.gates.max_drawdown == 1.00
     assert f.penalties.removal_k == (1, 3, 5)
     assert f.penalties.removal_floor == (0.40, 0.20, 0.10)
     assert f.penalties.removal_target == (0.80, 0.65, 0.55)

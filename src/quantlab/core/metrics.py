@@ -26,6 +26,7 @@ __all__ = [
     "DEFAULT_RETENTION_K",
     "LOW_TRADE_THRESHOLD",
     "MetricSet",
+    "benchmark_drawdown",
     "compute_metrics",
     "drawdown_series",
     "retention_after_removing_top_winners",
@@ -125,6 +126,32 @@ def drawdown_series(equity: np.ndarray) -> np.ndarray:
     with np.errstate(divide="ignore", invalid="ignore"):
         raw = np.where(np.abs(peak) > _EPS, 1.0 - values / peak, 0.0)
     return np.clip(raw, 0.0, 1.0)
+
+
+def benchmark_drawdown(close: np.ndarray) -> float | None:
+    """Buy-and-hold's maximum drawdown over one window (ADR 0011's companion).
+
+    The same arithmetic :func:`drawdown_series` applies to an equity curve,
+    applied to the close series — because buy-and-hold *is* an equity curve, up
+    to a constant multiple that drawdown is invariant to.
+
+    This is the denominator of the relative ``F_DRAWDOWN`` gate, and it exists as
+    a function of one array so that it can only ever describe the window it was
+    handed. There is deliberately no cache keyed on symbol or segment: with a
+    per-generation :class:`TrainingEnvironment` the window changes under a fixed
+    symbol and a fixed segment name, so anything keyed on those would return a
+    stale figure and would do it silently. ADR 0012.
+
+    Returns:
+        The maximum fractional drawdown in ``[0, 1]``, or ``None`` for a window
+        too short to have one — which the gate reads as "no benchmark", not as
+        "a benchmark of zero".
+    """
+    values = np.asarray(close, dtype="float64")
+    if values.size < 2:
+        return None
+    drawdowns = drawdown_series(values)
+    return float(np.max(drawdowns)) if drawdowns.size else None
 
 
 def _max_drawdown_bars(equity: np.ndarray) -> int:

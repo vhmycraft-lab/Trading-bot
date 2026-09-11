@@ -53,7 +53,7 @@ from quantlab.core.fitness import (
 from quantlab.core.genome import StrategyGenome
 from quantlab.core.hashing import canonical_json, short_id
 from quantlab.core.logging import get_logger
-from quantlab.core.metrics import MetricSet
+from quantlab.core.metrics import MetricSet, benchmark_drawdown
 from quantlab.core.types import BacktestConfig, BarFrame
 from quantlab.evolution.diversity import CandidateView, behaviour_hash, genome_signature
 from quantlab.evolution.library import OperatorLibrary
@@ -645,8 +645,21 @@ def _evaluate_member(
         positions = np.asarray(run.result.position_frac, dtype="float64")
 
     inner = InnerFoldReport() if inner_for is None else inner_for(genome, params)
+    # Computed here, from the same ``bars`` this candidate was just run on, rather
+    # than hoisted to the generation or cached by symbol and segment. With a
+    # per-generation TrainingEnvironment the window moves while the symbol and the
+    # segment name do not, so a hoisted value is one refactor away from being
+    # silently stale — and a drawdown ceiling that is quietly measured against the
+    # wrong window is exactly the kind of defect that produces no error. The cost
+    # is one pass over the closes per candidate, against a full backtest. ADR 0012.
     fitness = compute_fitness(
-        metrics, trades, inner, None, settings.fitness, n_free_params=len(genome.params)
+        metrics,
+        trades,
+        inner,
+        None,
+        settings.fitness,
+        n_free_params=len(genome.params),
+        benchmark_drawdown=benchmark_drawdown(bars.close),
     )
     view = CandidateView(
         candidate_id=member.candidate_id,
